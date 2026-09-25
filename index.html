@@ -350,6 +350,10 @@
   @media (max-width: 480px) {
     .grid { grid-template-columns: 1fr 1fr; }
     .best-row { grid-template-columns: auto auto 1fr; }
+    .best-row .game {
+      grid-column: 1 / -1; white-space: normal; overflow: visible; text-overflow: clip;
+      font-size: 12px; line-height: 1.4; margin-top: 1px;
+    }
     .best-row .time { grid-column: 1 / -1; display: flex; justify-content: flex-end; align-items: baseline; gap: 6px; }
 
     .hero { padding-block: 14px 10px; gap: 7px; }
