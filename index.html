@@ -362,6 +362,29 @@
     .search input { padding: 8px 12px 8px 32px; font-size: 14px; }
     .chip { padding: 5px 11px; font-size: 12px; }
     .legend { padding-block: 10px 2px; gap: 7px 12px; font-size: 11.5px; }
+
+    /* history table -> stacked cards, so date/venue text is never clipped */
+    .hist-scroll { overflow-x: hidden; max-height: 420px; }
+    table.history thead { display: none; }
+    table.history, table.history tbody { display: block; width: 100%; }
+    table.history tr {
+      display: grid; grid-template-columns: 1fr auto;
+      grid-template-areas: "date wway" "ev time" "game game";
+      column-gap: 8px; row-gap: 3px;
+      padding: 10px 10px; border-bottom: 1px solid var(--border);
+    }
+    table.history tr:last-child { border-bottom: none; }
+    table.history td {
+      display: block; padding: 0; border-bottom: none; white-space: normal;
+      font-size: 12.5px;
+    }
+    table.history td:nth-child(1) { grid-area: date; color: var(--ink-muted); font-size: 11.5px; }
+    table.history td:nth-child(2) { grid-area: ev; }
+    table.history td:nth-child(3) { grid-area: wway; text-align: right; color: var(--ink-muted); font-size: 11.5px; }
+    table.history td:nth-child(4) { grid-area: game; }
+    table.history td:nth-child(5) { grid-area: time; align-self: end; text-align: right; font-size: 14px; }
+    .hist-ev { white-space: normal; }
+    .hist-game { white-space: normal; line-height: 1.4; }
   }
 </style>
 </head>
