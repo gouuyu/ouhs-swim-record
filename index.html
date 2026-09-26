@@ -308,6 +308,17 @@
   .hist-game { color: var(--ink-2); }
   .hist-time { font-weight: 700; text-align: right; white-space: nowrap; }
 
+  .hist-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .hist-filters select {
+    font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 26px 6px 10px;
+    cursor: pointer; appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2382969c' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 7px center; background-size: 13px;
+  }
+  .hist-filters select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  #histCountLine { padding-block: 0 8px; }
+
   /* ---------- Para-swimming section ---------- */
   .para-section {
     background: var(--para-wash); border: 1px solid color-mix(in srgb, var(--para) 35%, transparent);
@@ -457,6 +468,12 @@
       </div>
       <div class="modal-section">
         <h3>大会成績履歴</h3>
+        <div class="hist-filters">
+          <select id="histStrokeFilter" aria-label="泳法で絞り込み"></select>
+          <select id="histDistFilter" aria-label="距離で絞り込み"></select>
+          <select id="histWaterwayFilter" aria-label="水路で絞り込み"></select>
+        </div>
+        <div class="count-line" id="histCountLine"></div>
         <div class="hist-scroll">
           <table class="history">
             <thead><tr><th>年月日</th><th>種目</th><th>水路</th><th>大会名</th><th>タイム</th></tr></thead>
@@ -654,6 +671,69 @@
     panel.hidden = expanded;
   });
 
+  // ---- history filters (泳法・距離・水路) ----
+  var currentDetail = null;
+  var histFilter = { stroke: 'all', dist: 'all', waterway: 'all' };
+  var histStrokeSelect = document.getElementById('histStrokeFilter');
+  var histDistSelect = document.getElementById('histDistFilter');
+  var histWaterwaySelect = document.getElementById('histWaterwayFilter');
+
+  function distNum(d) { return parseInt(d, 10) || 0; }
+
+  // フィルターの選択肢は、対象の選手個人ではなく全選手の記録から作る固定の一覧
+  // （その選手が現在たまたま記録を持っていない泳法・距離でも選べるようにする）
+  (function initHistFilterOptions() {
+    var allDists = new Set();
+    var allWaterways = new Set();
+    ROSTER.forEach(function (r) {
+      (r.history || []).forEach(function (h) {
+        allDists.add(h.distance);
+        allWaterways.add(h.waterway);
+      });
+    });
+    var dists = Array.from(allDists).sort(function (a, b) { return distNum(a) - distNum(b); });
+    var waterways = ['長水路', '短水路'].filter(function (w) { return allWaterways.has(w); });
+
+    histStrokeSelect.innerHTML = '<option value="all">泳法：すべて</option>' +
+      STROKE_ORDER.map(function (s) { return '<option value="' + esc(s) + '">' + esc(s) + '</option>'; }).join('');
+    histDistSelect.innerHTML = '<option value="all">距離：すべて</option>' +
+      dists.map(function (d) { return '<option value="' + esc(d) + '">' + esc(d) + '</option>'; }).join('');
+    histWaterwaySelect.innerHTML = '<option value="all">水路：すべて</option>' +
+      waterways.map(function (w) { return '<option value="' + esc(w) + '">' + esc(w) + '</option>'; }).join('');
+  })();
+
+  function resetHistFilters() {
+    histStrokeSelect.value = 'all';
+    histDistSelect.value = 'all';
+    histWaterwaySelect.value = 'all';
+  }
+
+  function renderHistoryTable() {
+    var histBody = document.getElementById('modalHistory');
+    var countLine = document.getElementById('histCountLine');
+    var list = (currentDetail && currentDetail.history) || [];
+    var filtered = list.filter(function (h) {
+      if (histFilter.stroke !== 'all' && h.style !== histFilter.stroke) return false;
+      if (histFilter.dist !== 'all' && h.distance !== histFilter.dist) return false;
+      if (histFilter.waterway !== 'all' && h.waterway !== histFilter.waterway) return false;
+      return true;
+    });
+    countLine.textContent = filtered.length + ' 件を表示中（全 ' + list.length + ' 件）';
+    histBody.innerHTML = filtered.map(function (h) {
+      return '<tr>' +
+        '<td class="num">' + h.year + '/' + esc(h.date || '') + '</td>' +
+        '<td><span class="hist-ev"><span class="sw" style="background:' + strokeColor(h.style) + '"></span>' + esc(h.distance) + esc(h.style) + '</span></td>' +
+        '<td>' + esc(h.waterway) + '</td>' +
+        '<td class="hist-game">' + esc(h.game) + '</td>' +
+        '<td class="hist-time num">' + esc(h.time) + '</td>' +
+        '</tr>';
+    }).join('') || '<tr><td colspan="5" class="card-empty">該当する記録がありません</td></tr>';
+  }
+
+  histStrokeSelect.addEventListener('change', function () { histFilter.stroke = this.value; renderHistoryTable(); });
+  histDistSelect.addEventListener('change', function () { histFilter.dist = this.value; renderHistoryTable(); });
+  histWaterwaySelect.addEventListener('change', function () { histFilter.waterway = this.value; renderHistoryTable(); });
+
   function openDetail(idx) {
     var r = ROSTER[idx];
     lastFocused = document.activeElement;
@@ -685,16 +765,10 @@
     }).join('');
     bestsWrap.innerHTML = groupsHTML || '<div class="card-empty">対象期間の公認記録がありません</div>';
 
-    var histBody = document.getElementById('modalHistory');
-    histBody.innerHTML = (r.history || []).map(function (h) {
-      return '<tr>' +
-        '<td class="num">' + h.year + '/' + esc(h.date || '') + '</td>' +
-        '<td><span class="hist-ev"><span class="sw" style="background:' + strokeColor(h.style) + '"></span>' + esc(h.distance) + esc(h.style) + '</span></td>' +
-        '<td>' + esc(h.waterway) + '</td>' +
-        '<td class="hist-game">' + esc(h.game) + '</td>' +
-        '<td class="hist-time num">' + esc(h.time) + '</td>' +
-        '</tr>';
-    }).join('') || '<tr><td colspan="5" class="card-empty">記録なし</td></tr>';
+    currentDetail = r;
+    histFilter = { stroke: 'all', dist: 'all', waterway: 'all' };
+    resetHistFilters();
+    renderHistoryTable();
 
     var paraSection = document.getElementById('paraSection');
     if (r.para) {
