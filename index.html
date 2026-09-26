@@ -523,6 +523,20 @@
         <p class="para-note">日本パラ水泳連盟公認記録データベースに登録されている、障がい者スポーツの大会記録です。</p>
         <div class="nat-record" id="paraNatRecord" hidden></div>
         <div id="modalParaBests"></div>
+        <div class="hist-filters" style="margin-top:14px;">
+          <select id="paraHistStrokeFilter" aria-label="泳法で絞り込み"></select>
+          <select id="paraHistDistFilter" aria-label="距離で絞り込み"></select>
+          <select id="paraHistWaterwayFilter" aria-label="水路で絞り込み"></select>
+          <select id="paraHistSortSelect" aria-label="並び順">
+            <option value="date">日付が新しい順</option>
+            <option value="time">タイムが速い順</option>
+          </select>
+        </div>
+        <button type="button" class="hist-graph-btn" id="paraHistGraphBtn" hidden aria-expanded="false">
+          <span class="arrow">&#9656;</span>推移をグラフで表示
+        </button>
+        <div class="hist-graph" id="paraHistGraphWrap" hidden></div>
+        <div class="count-line" id="paraHistCountLine"></div>
         <div class="hist-scroll" style="margin-top:12px;">
           <table class="history">
             <thead><tr><th>年月日</th><th>種目</th><th>水路</th><th>大会名</th><th>タイム</th></tr></thead>
@@ -708,15 +722,7 @@
     panel.hidden = expanded;
   });
 
-  // ---- history filters (泳法・距離・水路) ----
-  var currentDetail = null;
-  var histFilter = { stroke: 'all', dist: 'all', waterway: 'all' };
-  var histSort = 'date';
-  var histStrokeSelect = document.getElementById('histStrokeFilter');
-  var histDistSelect = document.getElementById('histDistFilter');
-  var histWaterwaySelect = document.getElementById('histWaterwayFilter');
-  var histSortSelect = document.getElementById('histSortSelect');
-
+  // ---- history filters (泳法・距離・水路)：通常の大会成績履歴／パラ水泳記録の両方で使う共通部品 ----
   function distNum(d) { return parseInt(d, 10) || 0; }
   function dateKey(h) {
     var mmdd = (h.date || '').split('/');
@@ -724,84 +730,133 @@
     return h.year * 10000 + mo * 100 + da;
   }
 
-  // フィルターの選択肢は、対象の選手個人ではなく全選手の記録から作る固定の一覧
-  // （その選手が現在たまたま記録を持っていない泳法・距離でも選べるようにする）
-  (function initHistFilterOptions() {
-    var allDists = new Set();
-    var allWaterways = new Set();
-    ROSTER.forEach(function (r) {
-      (r.history || []).forEach(function (h) {
-        allDists.add(h.distance);
-        allWaterways.add(h.waterway);
+  function historyRowHTML(h) {
+    return '<tr>' +
+      '<td class="num">' + h.year + '/' + esc(h.date || '') + '</td>' +
+      '<td><span class="hist-ev"><span class="sw" style="background:' + strokeColor(h.style) + '"></span>' + esc(h.distance) + esc(h.style) +
+      (h.cls ? '<span class="cls-tag">' + esc(h.cls) + '</span>' : '') + '</span></td>' +
+      '<td>' + esc(h.waterway) + '</td>' +
+      '<td class="hist-game">' + esc(h.game) + '</td>' +
+      (h.dnf ? '<td class="hist-time num dnf">棄権</td>' : '<td class="hist-time num">' + esc(h.time) + '</td>') +
+      '</tr>';
+  }
+
+  // 種目・距離・水路の選択肢は、対象の選手個人ではなく該当データベース全体から作る固定の一覧にする
+  // （その選手が現在たまたま記録を持っていない組み合わせでも選べるようにする）
+  function createHistoryPanel(ids, allHistories, tooltipId) {
+    var strokeSel = document.getElementById(ids.stroke);
+    var distSel = document.getElementById(ids.dist);
+    var waterwaySel = document.getElementById(ids.waterway);
+    var sortSel = document.getElementById(ids.sort);
+    var graphBtn = document.getElementById(ids.graphBtn);
+    var graphWrap = document.getElementById(ids.graphWrap);
+    var countLine = document.getElementById(ids.countLine);
+    var tbody = document.getElementById(ids.tbody);
+
+    var filter = { stroke: 'all', dist: 'all', waterway: 'all' };
+    var sort = 'date';
+    var currentList = [];
+    var filteredList = [];
+
+    (function initOptions() {
+      var allDists = new Set(), allWaterways = new Set();
+      allHistories().forEach(function (h) { allDists.add(h.distance); allWaterways.add(h.waterway); });
+      var dists = Array.from(allDists).sort(function (a, b) { return distNum(a) - distNum(b); });
+      var waterways = ['長水路', '短水路'].filter(function (w) { return allWaterways.has(w); });
+      strokeSel.innerHTML = '<option value="all">泳法：すべて</option>' +
+        STROKE_ORDER.map(function (s) { return '<option value="' + esc(s) + '">' + esc(s) + '</option>'; }).join('');
+      distSel.innerHTML = '<option value="all">距離：すべて</option>' +
+        dists.map(function (d) { return '<option value="' + esc(d) + '">' + esc(d) + '</option>'; }).join('');
+      waterwaySel.innerHTML = '<option value="all">水路：すべて</option>' +
+        waterways.map(function (w) { return '<option value="' + esc(w) + '">' + esc(w) + '</option>'; }).join('');
+    })();
+
+    function closeGraph() {
+      graphBtn.setAttribute('aria-expanded', 'false');
+      graphBtn.innerHTML = '<span class="arrow">&#9656;</span>推移をグラフで表示';
+      graphWrap.hidden = true;
+      graphWrap.innerHTML = '';
+    }
+
+    function render() {
+      var filtered = currentList.filter(function (h) {
+        if (filter.stroke !== 'all' && h.style !== filter.stroke) return false;
+        if (filter.dist !== 'all' && h.distance !== filter.dist) return false;
+        if (filter.waterway !== 'all' && h.waterway !== filter.waterway) return false;
+        return true;
+      });
+      filteredList = filtered;
+      countLine.textContent = filtered.length + ' 件を表示中（全 ' + currentList.length + ' 件）';
+      var displayList = filtered.slice().sort(function (a, b) {
+        return sort === 'time' ? (a.seconds - b.seconds) : (dateKey(b) - dateKey(a));
+      });
+      tbody.innerHTML = displayList.map(historyRowHTML).join('') || '<tr><td colspan="5" class="card-empty">該当する記録がありません</td></tr>';
+
+      var allSpecific = filter.stroke !== 'all' && filter.dist !== 'all' && filter.waterway !== 'all';
+      var graphable = allSpecific && filtered.filter(function (h) { return !h.dnf; }).length >= 2;
+      closeGraph();
+      graphBtn.hidden = !graphable;
+    }
+
+    function reset(list) {
+      currentList = list || [];
+      filter = { stroke: 'all', dist: 'all', waterway: 'all' };
+      sort = 'date';
+      strokeSel.value = 'all'; distSel.value = 'all'; waterwaySel.value = 'all'; sortSel.value = 'date';
+      render();
+    }
+
+    strokeSel.addEventListener('change', function () { filter.stroke = this.value; render(); });
+    distSel.addEventListener('change', function () { filter.dist = this.value; render(); });
+    waterwaySel.addEventListener('change', function () { filter.waterway = this.value; render(); });
+    sortSel.addEventListener('change', function () { sort = this.value; render(); });
+
+    graphBtn.addEventListener('click', function () {
+      var expanded = graphBtn.getAttribute('aria-expanded') === 'true';
+      if (expanded) { closeGraph(); return; }
+      var graphable = filteredList.filter(function (h) { return !h.dnf; });
+      graphWrap.innerHTML = buildHistoryGraphSVG(graphable, filter.stroke, tooltipId);
+      graphWrap.hidden = false;
+      graphBtn.setAttribute('aria-expanded', 'true');
+      graphBtn.innerHTML = '<span class="arrow">&#9656;</span>グラフを閉じる';
+
+      var tooltip = document.getElementById(tooltipId);
+      graphWrap.querySelectorAll('.hg-dot').forEach(function (dot) {
+        dot.addEventListener('mouseenter', function () { showHgTooltip(dot, tooltip); });
+        dot.addEventListener('mousemove', function () { positionHgTooltip(dot, tooltip, graphWrap); });
+        dot.addEventListener('mouseleave', function () { tooltip.style.visibility = 'hidden'; });
+        dot.addEventListener('click', function () {
+          var willShow = tooltip.style.visibility !== 'visible';
+          if (willShow) { showHgTooltip(dot, tooltip, graphWrap); } else { tooltip.style.visibility = 'hidden'; }
+        });
       });
     });
-    var dists = Array.from(allDists).sort(function (a, b) { return distNum(a) - distNum(b); });
-    var waterways = ['長水路', '短水路'].filter(function (w) { return allWaterways.has(w); });
 
-    histStrokeSelect.innerHTML = '<option value="all">泳法：すべて</option>' +
-      STROKE_ORDER.map(function (s) { return '<option value="' + esc(s) + '">' + esc(s) + '</option>'; }).join('');
-    histDistSelect.innerHTML = '<option value="all">距離：すべて</option>' +
-      dists.map(function (d) { return '<option value="' + esc(d) + '">' + esc(d) + '</option>'; }).join('');
-    histWaterwaySelect.innerHTML = '<option value="all">水路：すべて</option>' +
-      waterways.map(function (w) { return '<option value="' + esc(w) + '">' + esc(w) + '</option>'; }).join('');
-  })();
-
-  function resetHistFilters() {
-    histStrokeSelect.value = 'all';
-    histDistSelect.value = 'all';
-    histWaterwaySelect.value = 'all';
-    histSort = 'date';
-    histSortSelect.value = 'date';
+    return { reset: reset };
   }
 
-  var histGraphBtn = document.getElementById('histGraphBtn');
-  var histGraphWrap = document.getElementById('histGraphWrap');
-  var histFilteredList = [];
-
-  function closeHistGraph() {
-    histGraphBtn.setAttribute('aria-expanded', 'false');
-    histGraphBtn.innerHTML = '<span class="arrow">&#9656;</span>推移をグラフで表示';
-    histGraphWrap.hidden = true;
-    histGraphWrap.innerHTML = '';
+  function showHgTooltip(dot, tooltip, wrapEl) {
+    wrapEl = wrapEl || dot.closest('.hist-graph');
+    var pbTag = dot.dataset.pb === 'true' ? '<span style="color:var(--gold);font-weight:700;">自己ベスト・</span>' : '';
+    tooltip.innerHTML = pbTag + esc(dot.dataset.date) + '<br><b>' + esc(dot.dataset.time) + '</b><br>' +
+      '<span style="color:var(--ink-muted);">' + esc(dot.dataset.game) + '</span>';
+    tooltip.style.visibility = 'visible';
+    positionHgTooltip(dot, tooltip, wrapEl);
   }
 
-  function renderHistoryTable() {
-    var histBody = document.getElementById('modalHistory');
-    var countLine = document.getElementById('histCountLine');
-    var list = (currentDetail && currentDetail.history) || [];
-    var filtered = list.filter(function (h) {
-      if (histFilter.stroke !== 'all' && h.style !== histFilter.stroke) return false;
-      if (histFilter.dist !== 'all' && h.distance !== histFilter.dist) return false;
-      if (histFilter.waterway !== 'all' && h.waterway !== histFilter.waterway) return false;
-      return true;
-    });
-    histFilteredList = filtered;
-    countLine.textContent = filtered.length + ' 件を表示中（全 ' + list.length + ' 件）';
-    var displayList = filtered.slice().sort(function (a, b) {
-      return histSort === 'time' ? (a.seconds - b.seconds) : (dateKey(b) - dateKey(a));
-    });
-    histBody.innerHTML = displayList.map(function (h) {
-      return '<tr>' +
-        '<td class="num">' + h.year + '/' + esc(h.date || '') + '</td>' +
-        '<td><span class="hist-ev"><span class="sw" style="background:' + strokeColor(h.style) + '"></span>' + esc(h.distance) + esc(h.style) + '</span></td>' +
-        '<td>' + esc(h.waterway) + '</td>' +
-        '<td class="hist-game">' + esc(h.game) + '</td>' +
-        '<td class="hist-time num">' + esc(h.time) + '</td>' +
-        '</tr>';
-    }).join('') || '<tr><td colspan="5" class="card-empty">該当する記録がありません</td></tr>';
-
-    var allSpecific = histFilter.stroke !== 'all' && histFilter.dist !== 'all' && histFilter.waterway !== 'all';
-    var graphable = allSpecific && filtered.length >= 2;
-    closeHistGraph();
-    histGraphBtn.hidden = !graphable;
+  function positionHgTooltip(dot, tooltip, wrapEl) {
+    wrapEl = wrapEl || dot.closest('.hist-graph');
+    var wrapRect = wrapEl.getBoundingClientRect();
+    var svg = dot.ownerSVGElement;
+    var pt = svg.createSVGPoint();
+    pt.x = parseFloat(dot.getAttribute('cx'));
+    pt.y = parseFloat(dot.getAttribute('cy'));
+    var screenPt = pt.matrixTransform(svg.getScreenCTM());
+    tooltip.style.left = (screenPt.x - wrapRect.left) + 'px';
+    tooltip.style.top = (screenPt.y - wrapRect.top - 10) + 'px';
   }
 
-  histStrokeSelect.addEventListener('change', function () { histFilter.stroke = this.value; renderHistoryTable(); });
-  histDistSelect.addEventListener('change', function () { histFilter.dist = this.value; renderHistoryTable(); });
-  histWaterwaySelect.addEventListener('change', function () { histFilter.waterway = this.value; renderHistoryTable(); });
-  histSortSelect.addEventListener('change', function () { histSort = this.value; renderHistoryTable(); });
-
-  function buildHistoryGraphSVG(list, style) {
+  function buildHistoryGraphSVG(list, style, tooltipId) {
     // グラフは表の並び順（日付順・タイム順）に関わらず、必ず日付の古い順で表示する
     var pts = list.slice().sort(function (a, b) { return dateKey(a) - dateKey(b); });
     var n = pts.length;
@@ -851,47 +906,26 @@
       '<path d="' + pathD + '" fill="none" stroke="' + lineColor + '" stroke-width="2"></path>' +
       dotsHTML +
       '</svg>' +
-      '<div class="hg-tooltip" id="hgTooltip"></div>';
+      '<div class="hg-tooltip" id="' + tooltipId + '"></div>';
   }
 
-  histGraphBtn.addEventListener('click', function () {
-    var expanded = histGraphBtn.getAttribute('aria-expanded') === 'true';
-    if (expanded) { closeHistGraph(); return; }
-    histGraphWrap.innerHTML = buildHistoryGraphSVG(histFilteredList, histFilter.stroke);
-    histGraphWrap.hidden = false;
-    histGraphBtn.setAttribute('aria-expanded', 'true');
-    histGraphBtn.innerHTML = '<span class="arrow">&#9656;</span>グラフを閉じる';
+  var mainHistPanel = createHistoryPanel({
+    stroke: 'histStrokeFilter', dist: 'histDistFilter', waterway: 'histWaterwayFilter', sort: 'histSortSelect',
+    graphBtn: 'histGraphBtn', graphWrap: 'histGraphWrap', countLine: 'histCountLine', tbody: 'modalHistory'
+  }, function () {
+    var all = [];
+    ROSTER.forEach(function (r) { all = all.concat(r.history || []); });
+    return all;
+  }, 'hgTooltipMain');
 
-    var tooltip = document.getElementById('hgTooltip');
-    histGraphWrap.querySelectorAll('.hg-dot').forEach(function (dot) {
-      dot.addEventListener('mouseenter', function () { showHgTooltip(dot, tooltip); });
-      dot.addEventListener('mousemove', function () { positionHgTooltip(dot, tooltip); });
-      dot.addEventListener('mouseleave', function () { tooltip.style.visibility = 'hidden'; });
-      dot.addEventListener('click', function () {
-        var willShow = tooltip.style.visibility !== 'visible';
-        if (willShow) { showHgTooltip(dot, tooltip); } else { tooltip.style.visibility = 'hidden'; }
-      });
-    });
-  });
-
-  function showHgTooltip(dot, tooltip) {
-    var pbTag = dot.dataset.pb === 'true' ? '<span style="color:var(--gold);font-weight:700;">自己ベスト・</span>' : '';
-    tooltip.innerHTML = pbTag + esc(dot.dataset.date) + '<br><b>' + esc(dot.dataset.time) + '</b><br>' +
-      '<span style="color:var(--ink-muted);">' + esc(dot.dataset.game) + '</span>';
-    tooltip.style.visibility = 'visible';
-    positionHgTooltip(dot, tooltip);
-  }
-
-  function positionHgTooltip(dot, tooltip) {
-    var wrapRect = histGraphWrap.getBoundingClientRect();
-    var svg = dot.ownerSVGElement;
-    var pt = svg.createSVGPoint();
-    pt.x = parseFloat(dot.getAttribute('cx'));
-    pt.y = parseFloat(dot.getAttribute('cy'));
-    var screenPt = pt.matrixTransform(svg.getScreenCTM());
-    tooltip.style.left = (screenPt.x - wrapRect.left) + 'px';
-    tooltip.style.top = (screenPt.y - wrapRect.top - 10) + 'px';
-  }
+  var paraHistPanel = createHistoryPanel({
+    stroke: 'paraHistStrokeFilter', dist: 'paraHistDistFilter', waterway: 'paraHistWaterwayFilter', sort: 'paraHistSortSelect',
+    graphBtn: 'paraHistGraphBtn', graphWrap: 'paraHistGraphWrap', countLine: 'paraHistCountLine', tbody: 'modalParaHistory'
+  }, function () {
+    var all = [];
+    ROSTER.forEach(function (r) { if (r.para) all = all.concat(r.para.history || []); });
+    return all;
+  }, 'hgTooltipPara');
 
   function openDetail(idx) {
     var r = ROSTER[idx];
@@ -924,10 +958,7 @@
     }).join('');
     bestsWrap.innerHTML = groupsHTML || '<div class="card-empty">対象期間の公認記録がありません</div>';
 
-    currentDetail = r;
-    histFilter = { stroke: 'all', dist: 'all', waterway: 'all' };
-    resetHistFilters();
-    renderHistoryTable();
+    mainHistPanel.reset(r.history);
 
     var paraSection = document.getElementById('paraSection');
     if (r.para) {
@@ -970,19 +1001,7 @@
       }).join('');
       document.getElementById('modalParaBests').innerHTML = paraGroupsHTML || '<div class="card-empty">記録がありません</div>';
 
-      var paraHistBody = document.getElementById('modalParaHistory');
-      paraHistBody.innerHTML = (r.para.history || []).map(function (h) {
-        var timeCell = h.dnf
-          ? '<td class="hist-time num dnf">棄権</td>'
-          : '<td class="hist-time num">' + esc(h.time) + '</td>';
-        return '<tr>' +
-          '<td class="num">' + h.year + '/' + esc(h.date || '') + '</td>' +
-          '<td><span class="hist-ev"><span class="sw" style="background:' + strokeColor(h.style) + '"></span>' + esc(h.distance) + esc(h.style) + '<span class="cls-tag">' + esc(h.cls) + '</span></span></td>' +
-          '<td>' + esc(h.waterway) + '</td>' +
-          '<td class="hist-game">' + esc(h.game) + '</td>' +
-          timeCell +
-          '</tr>';
-      }).join('') || '<tr><td colspan="5" class="card-empty">記録なし</td></tr>';
+      paraHistPanel.reset(r.para.history);
     } else {
       paraSection.hidden = true;
     }
