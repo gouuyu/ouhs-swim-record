@@ -319,6 +319,33 @@
   .hist-filters select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   #histCountLine { padding-block: 0 8px; }
 
+  .hist-graph-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    font: inherit; font-size: 12.5px; font-weight: 700; color: var(--accent);
+    background: var(--accent-wash); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    border-radius: 100px; padding: 6px 14px; cursor: pointer; margin: 2px 0 10px;
+  }
+  .hist-graph-btn:hover { border-color: var(--accent); }
+  .hist-graph-btn .arrow { display: inline-block; font-size: 10px; transition: transform .15s ease; }
+  .hist-graph-btn[aria-expanded="true"] .arrow { transform: rotate(90deg); }
+  .hist-graph[hidden] { display: none; }
+  .hist-graph {
+    position: relative; margin-bottom: 12px; padding: 14px 14px 6px;
+    background: var(--surface-2); border-radius: 12px;
+  }
+  .hist-graph .hg-hint { font-size: 11px; color: var(--ink-muted); margin: 0 0 4px; }
+  .hist-graph svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .hist-graph .hg-axis-label { font-size: 10px; fill: var(--ink-muted); font-family: inherit; }
+  .hist-graph .hg-grid { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 3; }
+  .hist-graph .hg-dot { stroke: var(--surface-2); stroke-width: 2; cursor: pointer; }
+  .hist-graph .hg-dot.pb { stroke: var(--gold); }
+  .hist-graph .hg-tooltip {
+    position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border-strong);
+    border-radius: 8px; padding: 6px 10px; font-size: 11.5px; line-height: 1.5; box-shadow: var(--shadow);
+    transform: translate(-50%, -100%); white-space: nowrap; z-index: 5; visibility: hidden;
+  }
+  .hist-graph .hg-tooltip b { font-size: 13px; }
+
   /* ---------- Para-swimming section ---------- */
   .para-section {
     background: var(--para-wash); border: 1px solid color-mix(in srgb, var(--para) 35%, transparent);
@@ -472,7 +499,15 @@
           <select id="histStrokeFilter" aria-label="泳法で絞り込み"></select>
           <select id="histDistFilter" aria-label="距離で絞り込み"></select>
           <select id="histWaterwayFilter" aria-label="水路で絞り込み"></select>
+          <select id="histSortSelect" aria-label="並び順">
+            <option value="date">日付が新しい順</option>
+            <option value="time">タイムが速い順</option>
+          </select>
         </div>
+        <button type="button" class="hist-graph-btn" id="histGraphBtn" hidden aria-expanded="false">
+          <span class="arrow">&#9656;</span>推移をグラフで表示
+        </button>
+        <div class="hist-graph" id="histGraphWrap" hidden></div>
         <div class="count-line" id="histCountLine"></div>
         <div class="hist-scroll">
           <table class="history">
@@ -674,11 +709,18 @@
   // ---- history filters (泳法・距離・水路) ----
   var currentDetail = null;
   var histFilter = { stroke: 'all', dist: 'all', waterway: 'all' };
+  var histSort = 'date';
   var histStrokeSelect = document.getElementById('histStrokeFilter');
   var histDistSelect = document.getElementById('histDistFilter');
   var histWaterwaySelect = document.getElementById('histWaterwayFilter');
+  var histSortSelect = document.getElementById('histSortSelect');
 
   function distNum(d) { return parseInt(d, 10) || 0; }
+  function dateKey(h) {
+    var mmdd = (h.date || '').split('/');
+    var mo = parseInt(mmdd[0], 10) || 0, da = parseInt(mmdd[1], 10) || 0;
+    return h.year * 10000 + mo * 100 + da;
+  }
 
   // フィルターの選択肢は、対象の選手個人ではなく全選手の記録から作る固定の一覧
   // （その選手が現在たまたま記録を持っていない泳法・距離でも選べるようにする）
@@ -706,6 +748,19 @@
     histStrokeSelect.value = 'all';
     histDistSelect.value = 'all';
     histWaterwaySelect.value = 'all';
+    histSort = 'date';
+    histSortSelect.value = 'date';
+  }
+
+  var histGraphBtn = document.getElementById('histGraphBtn');
+  var histGraphWrap = document.getElementById('histGraphWrap');
+  var histFilteredList = [];
+
+  function closeHistGraph() {
+    histGraphBtn.setAttribute('aria-expanded', 'false');
+    histGraphBtn.innerHTML = '<span class="arrow">&#9656;</span>推移をグラフで表示';
+    histGraphWrap.hidden = true;
+    histGraphWrap.innerHTML = '';
   }
 
   function renderHistoryTable() {
@@ -718,8 +773,12 @@
       if (histFilter.waterway !== 'all' && h.waterway !== histFilter.waterway) return false;
       return true;
     });
+    histFilteredList = filtered;
     countLine.textContent = filtered.length + ' 件を表示中（全 ' + list.length + ' 件）';
-    histBody.innerHTML = filtered.map(function (h) {
+    var displayList = filtered.slice().sort(function (a, b) {
+      return histSort === 'time' ? (a.seconds - b.seconds) : (dateKey(b) - dateKey(a));
+    });
+    histBody.innerHTML = displayList.map(function (h) {
       return '<tr>' +
         '<td class="num">' + h.year + '/' + esc(h.date || '') + '</td>' +
         '<td><span class="hist-ev"><span class="sw" style="background:' + strokeColor(h.style) + '"></span>' + esc(h.distance) + esc(h.style) + '</span></td>' +
@@ -728,11 +787,109 @@
         '<td class="hist-time num">' + esc(h.time) + '</td>' +
         '</tr>';
     }).join('') || '<tr><td colspan="5" class="card-empty">該当する記録がありません</td></tr>';
+
+    var allSpecific = histFilter.stroke !== 'all' && histFilter.dist !== 'all' && histFilter.waterway !== 'all';
+    var graphable = allSpecific && filtered.length >= 2;
+    closeHistGraph();
+    histGraphBtn.hidden = !graphable;
   }
 
   histStrokeSelect.addEventListener('change', function () { histFilter.stroke = this.value; renderHistoryTable(); });
   histDistSelect.addEventListener('change', function () { histFilter.dist = this.value; renderHistoryTable(); });
   histWaterwaySelect.addEventListener('change', function () { histFilter.waterway = this.value; renderHistoryTable(); });
+  histSortSelect.addEventListener('change', function () { histSort = this.value; renderHistoryTable(); });
+
+  function buildHistoryGraphSVG(list, style) {
+    // グラフは表の並び順（日付順・タイム順）に関わらず、必ず日付の古い順で表示する
+    var pts = list.slice().sort(function (a, b) { return dateKey(a) - dateKey(b); });
+    var n = pts.length;
+    var W = 600, H = 220;
+    var padL = 46, padR = 14, padT = 16, padB = 26;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+
+    var secs = pts.map(function (p) { return p.seconds; });
+    var minS = Math.min.apply(null, secs), maxS = Math.max.apply(null, secs);
+    var range = maxS - minS;
+    if (range < 0.01) range = Math.max(minS * 0.02, 0.5);
+    var yPad = range * 0.12;
+    var loS = minS - yPad, hiS = maxS + yPad;
+
+    function xAt(i) { return n > 1 ? padL + (i / (n - 1)) * plotW : padL + plotW / 2; }
+    function yAt(s) { return padT + ((s - loS) / (hiS - loS)) * plotH; }
+
+    var pbIdx = 0;
+    for (var i = 1; i < n; i++) { if (secs[i] < secs[pbIdx]) pbIdx = i; }
+
+    var lineColor = strokeColor(style);
+    var pathD = pts.map(function (p, i) { return (i === 0 ? 'M' : 'L') + xAt(i).toFixed(1) + ',' + yAt(p.seconds).toFixed(1); }).join(' ');
+
+    var gridHTML =
+      '<line class="hg-grid" x1="' + padL + '" y1="' + yAt(minS).toFixed(1) + '" x2="' + (W - padR) + '" y2="' + yAt(minS).toFixed(1) + '"></line>' +
+      '<text class="hg-axis-label" x="4" y="' + (yAt(minS) + 3).toFixed(1) + '">' + esc(pts[pbIdx].time) + '</text>' +
+      '<line class="hg-grid" x1="' + padL + '" y1="' + yAt(maxS).toFixed(1) + '" x2="' + (W - padR) + '" y2="' + yAt(maxS).toFixed(1) + '"></line>' +
+      '<text class="hg-axis-label" x="4" y="' + (yAt(maxS) + 3).toFixed(1) + '">' + esc(pts[secs.indexOf(maxS)].time) + '</text>';
+
+    var xLabelIdxs = n <= 6 ? pts.map(function (_, i) { return i; }) : [0, Math.round((n - 1) / 2), n - 1];
+    var xLabelsHTML = xLabelIdxs.map(function (i) {
+      var anchor = i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle');
+      return '<text class="hg-axis-label" text-anchor="' + anchor + '" x="' + xAt(i).toFixed(1) + '" y="' + (H - 8) + '">' +
+        pts[i].year + '/' + esc(pts[i].date || '') + '</text>';
+    }).join('');
+
+    var dotsHTML = pts.map(function (p, i) {
+      var isPb = i === pbIdx;
+      return '<circle class="hg-dot' + (isPb ? ' pb' : '') + '" cx="' + xAt(i).toFixed(1) + '" cy="' + yAt(p.seconds).toFixed(1) + '" r="' + (isPb ? 6 : 4.5) + '" ' +
+        'fill="' + (isPb ? 'var(--gold)' : lineColor) + '" ' +
+        'data-time="' + esc(p.time) + '" data-date="' + p.year + '/' + esc(p.date || '') + '" data-game="' + esc(p.game) + '" data-pb="' + isPb + '"></circle>';
+    }).join('');
+
+    return '<div class="hg-hint">縦軸はタイム（上ほど速い）。金色の点が絞り込み範囲内の自己ベストです。</div>' +
+      '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="タイムの推移グラフ">' +
+      gridHTML + xLabelsHTML +
+      '<path d="' + pathD + '" fill="none" stroke="' + lineColor + '" stroke-width="2"></path>' +
+      dotsHTML +
+      '</svg>' +
+      '<div class="hg-tooltip" id="hgTooltip"></div>';
+  }
+
+  histGraphBtn.addEventListener('click', function () {
+    var expanded = histGraphBtn.getAttribute('aria-expanded') === 'true';
+    if (expanded) { closeHistGraph(); return; }
+    histGraphWrap.innerHTML = buildHistoryGraphSVG(histFilteredList, histFilter.stroke);
+    histGraphWrap.hidden = false;
+    histGraphBtn.setAttribute('aria-expanded', 'true');
+    histGraphBtn.innerHTML = '<span class="arrow">&#9656;</span>グラフを閉じる';
+
+    var tooltip = document.getElementById('hgTooltip');
+    histGraphWrap.querySelectorAll('.hg-dot').forEach(function (dot) {
+      dot.addEventListener('mouseenter', function () { showHgTooltip(dot, tooltip); });
+      dot.addEventListener('mousemove', function () { positionHgTooltip(dot, tooltip); });
+      dot.addEventListener('mouseleave', function () { tooltip.style.visibility = 'hidden'; });
+      dot.addEventListener('click', function () {
+        var willShow = tooltip.style.visibility !== 'visible';
+        if (willShow) { showHgTooltip(dot, tooltip); } else { tooltip.style.visibility = 'hidden'; }
+      });
+    });
+  });
+
+  function showHgTooltip(dot, tooltip) {
+    var pbTag = dot.dataset.pb === 'true' ? '<span style="color:var(--gold);font-weight:700;">自己ベスト・</span>' : '';
+    tooltip.innerHTML = pbTag + esc(dot.dataset.date) + '<br><b>' + esc(dot.dataset.time) + '</b><br>' +
+      '<span style="color:var(--ink-muted);">' + esc(dot.dataset.game) + '</span>';
+    tooltip.style.visibility = 'visible';
+    positionHgTooltip(dot, tooltip);
+  }
+
+  function positionHgTooltip(dot, tooltip) {
+    var wrapRect = histGraphWrap.getBoundingClientRect();
+    var svg = dot.ownerSVGElement;
+    var pt = svg.createSVGPoint();
+    pt.x = parseFloat(dot.getAttribute('cx'));
+    pt.y = parseFloat(dot.getAttribute('cy'));
+    var screenPt = pt.matrixTransform(svg.getScreenCTM());
+    tooltip.style.left = (screenPt.x - wrapRect.left) + 'px';
+    tooltip.style.top = (screenPt.y - wrapRect.top - 10) + 'px';
+  }
 
   function openDetail(idx) {
     var r = ROSTER[idx];
