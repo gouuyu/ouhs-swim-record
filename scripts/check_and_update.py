@@ -111,6 +111,19 @@ def do_login(page):
             log(body_text[:1000])
         except Exception as e2:
             log(f"  ページ本文の取得にも失敗しました: {e2}")
+        # 「Forbidden access」がサイト側のWAF（SiteGuard等）によるものなら、海外IPを
+        # 一律ブロックしている可能性が高い。GitHub Actionsの実行サーバーが実際に
+        # どこの国・どんな種類のネットワークからアクセスしているかを確認する。
+        try:
+            import urllib.request
+            with urllib.request.urlopen(
+                "https://ip-api.com/json/?fields=status,country,countryCode,isp,org,as,query",
+                timeout=5,
+            ) as resp:
+                geo_info = resp.read().decode("utf-8")
+            log(f"  実行サーバーのIP情報: {geo_info}")
+        except Exception as e3:
+            log(f"  IP情報の取得に失敗しました: {e3}")
         raise
     login_entry.click()
     page.wait_for_load_state("domcontentloaded")
