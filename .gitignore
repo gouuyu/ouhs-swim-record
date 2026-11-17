@@ -1,0 +1,17 @@
+# 自動化スクリプトの実行時に毎回増えるだけの作業ファイル。
+# ソースコードではないのでGitでは管理しない。
+
+# 実行ログ
+last_run.log
+watchdog_last_run.log
+
+# 見張り役（check_missed_run.ps1）の通知済み状態の記録
+scripts/.watchdog_state.json
+
+# エラー調査用に自動保存されるスクリーンショット
+scripts/debug_screenshots/
+
+# Pythonのバイトコードキャッシュ
+scripts/__pycache__/
+**/__pycache__/
+*.pyc

@@ -35,6 +35,7 @@ import json
 import os
 import re
 import sys
+import time
 import unicodedata
 
 from playwright.sync_api import TimeoutError as PWTimeoutError
@@ -80,11 +81,57 @@ def save_debug_screenshot(page, label):
 def click_text(page, text, timeout=10000):
     """表示テキストが完全一致するリンク/ボタンをクリックする。
     このサイトは遷移ごとにURLに暗号化トークンを含むため、固定URLへの
-    goto() は使わず、必ずこの関数のように実際のリンクをクリックする。"""
-    loc = page.get_by_text(text, exact=True).first
-    loc.wait_for(state="visible", timeout=timeout)
-    loc.click()
+    goto() は使わず、必ずこの関数のように実際のリンクをクリックする。
+
+    ログイン後のページには、同じテキストのリンクがDOM上に複数（おそらく
+    ヘッダー側の非表示コピーと、本文側の実際に見えているもの）存在する
+    ケースがあることが分かった。.first は常にDOM上で最初に出てくる方を
+    指すため、それがたまたま非表示側だと永久にタイムアウトしてしまう。
+    そのため、候補を一つずつ試して「実際に見えている」ものを優先して
+    クリックする。"""
+    candidates = page.get_by_text(text, exact=True)
+    deadline = time.monotonic() + (timeout / 1000)
+    visible_loc = None
+    while time.monotonic() < deadline:
+        n = candidates.count()
+        for i in range(n):
+            cand = candidates.nth(i)
+            try:
+                if cand.is_visible():
+                    visible_loc = cand
+                    break
+            except Exception:
+                continue
+        if visible_loc is not None:
+            break
+        page.wait_for_timeout(300)
+    if visible_loc is None:
+        # 最後の手段として、従来通り最初の一致を使う（エラーメッセージで
+        # 原因が分かるように失敗はさせる）。
+        visible_loc = candidates.first
+    visible_loc.wait_for(state="visible", timeout=2000)
+    visible_loc.click()
     page.wait_for_load_state("domcontentloaded")
+
+
+def goto_by_link_text(page, text, timeout=10000):
+    """表示テキストに一致するリンクのhref属性を取得し、goto()で直接遷移する。
+
+    実際に試したところ、ホームページのナビゲーション項目（スイマー検索等）は
+    カルーセルのようにDOM上で複製されており、is_visible()が一瞬trueを返しても、
+    実際の.click()はPlaywrightのactionabilityチェック（表示されていて、
+    安定していて、他の要素に隠れていないこと）に通らずタイムアウトする
+    ケースがあった（おそらくCSSアニメーションで表示/非表示が切り替わる
+    ため）。
+    hrefの値自体はこのログインセッション用の正規のURL（トークン付き）な
+    ので、クリック操作を使わずそれを読み取ってgoto()すれば、要素が
+    クリック可能な状態になっているかどうかに関係なく確実に遷移できる。"""
+    loc = page.locator("a").filter(has_text=text).first
+    loc.wait_for(state="attached", timeout=timeout)
+    href = loc.get_attribute("href")
+    if not href:
+        raise RuntimeError(f"「{text}」リンクのhref属性が取得できませんでした。")
+    page.goto(href, wait_until="domcontentloaded")
 
 
 def do_login(page):
@@ -94,46 +141,60 @@ def do_login(page):
         log("既にログイン状態です（想定外ですが続行します）。")
         return
 
-    # 「ログイン」リンク/ボタンを探してクリック
-    login_entry = page.get_by_text("ログイン", exact=False).first
+    # 実際にブラウザで未ログイン状態のトップページを確認したところ、
+    # トップページ上には「ログイン」という文字列は一切存在しなかった
+    # （ログイン中は「ログアウト」と表示される同じ位置が、未ログイン時は
+    # 「初めての方へ」という文言になっていた）。そこを辿ると画像だけの
+    # ボタン（テキストなし）のランディングページを経由して、最終的に
+    # /login_select.php の「ID・パスワードでログイン」リンクから
+    # /login/login.php のID/パスワード入力フォームに到達する、という
+    # 3段階の画面遷移だった。
+    #
+    # 以前の実装は「ログイン」という文字列を探してクリックしようとしていた
+    # ため、そもそもトップページに存在しないテキストを探し続けて
+    # 必ず失敗していた。
+    #
+    # /login/login.php はセッショントークンを含まない固定URLで、未ログイン
+    # 状態からの直接アクセスでも正しくID/パスワード入力フォームが表示される
+    # ことをブラウザで直接確認済みなので、画像ボタンを辿るクリック操作を
+    # 省略し、直接このURLへ遷移する。
+    LOGIN_FORM_URL = "https://sp.j-swim.jp/login/login.php"
+    page.goto(LOGIN_FORM_URL, wait_until="domcontentloaded")
+
+    # サイト側の実装（name="mail" / name="password"）をブラウザで直接確認
+    # 済みだが、念のため汎用セレクタも後方互換のフォールバックとして残す。
+    id_input = page.locator(
+        'input[name="mail"], input[type="text"], input[type="email"], '
+        'input[type="tel"], input:not([type])'
+    ).first
+    pw_input = page.locator('input[name="password"], input[type="password"]').first
     try:
-        login_entry.wait_for(state="visible", timeout=10000)
+        id_input.wait_for(state="visible", timeout=10000)
     except PWTimeoutError:
-        # 想定外の画面になっている可能性が高いので、原因調査のために現在の
-        # ページの状態をログとスクリーンショットの両方に残してから失敗させる。
-        log("  ※ トップページに「ログイン」という文字列が見つかりませんでした。")
+        log("  ※ ログインフォームのページに移動しましたが、ID入力欄が見つかりませんでした。")
         log(f"  現在のURL: {page.url}")
         log(f"  ページタイトル: {page.title()}")
-        save_debug_screenshot(page, "login_entry_not_found")
+        save_debug_screenshot(page, "id_input_not_found")
         try:
             body_text = page.locator("body").inner_text(timeout=5000)
             log("  ページ本文（先頭1000文字）:")
             log(body_text[:1000])
         except Exception as e2:
             log(f"  ページ本文の取得にも失敗しました: {e2}")
-        # 「Forbidden access」がサイト側のWAF（SiteGuard等）によるものなら、海外IPを
-        # 一律ブロックしている可能性が高い。GitHub Actionsの実行サーバーが実際に
-        # どこの国・どんな種類のネットワークからアクセスしているかを確認する。
         try:
-            import urllib.request
-            req = urllib.request.Request(
-                "https://ipinfo.io/json",
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-            )
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                geo_info = resp.read().decode("utf-8")
-            log(f"  実行サーバーのIP情報: {geo_info}")
+            html = page.content()
+            log("  フォーム部分のHTML（<form>タグの数: " + str(page.locator("form").count()) + "）:")
+            inputs_n = page.locator("input").count()
+            log(f"  ページ内のinputタグの数: {inputs_n}")
+            for i in range(min(inputs_n, 10)):
+                try:
+                    outer = page.locator("input").nth(i).evaluate("el => el.outerHTML")
+                    log(f"    input[{i}]: {outer}")
+                except Exception:
+                    pass
         except Exception as e3:
-            log(f"  IP情報の取得に失敗しました: {e3}")
+            log(f"  HTML構造の取得に失敗しました: {e3}")
         raise
-    login_entry.click()
-    page.wait_for_load_state("domcontentloaded")
-
-    # ID/パスワード欄を汎用セレクタで特定（サイト側の name 属性が不明なため、
-    # 「最初のテキスト系input」「最初のpassword input」という構造的な位置で判定）
-    id_input = page.locator('input[type="text"], input[type="email"], input[type="tel"]').first
-    pw_input = page.locator('input[type="password"]').first
-    id_input.wait_for(state="visible", timeout=10000)
     id_input.fill(LOGIN_ID)
     pw_input.fill(LOGIN_PW)
 
@@ -159,7 +220,7 @@ def search_and_open_swimmer(page, full_name):
     first = last_first[1] if len(last_first) > 1 else ""
 
     page.goto(BASE_URL, wait_until="domcontentloaded")
-    click_text(page, "スイマー検索")
+    goto_by_link_text(page, "スイマー検索")
 
     text_inputs = page.locator('input[type="text"]')
     n = text_inputs.count()
@@ -171,11 +232,29 @@ def search_and_open_swimmer(page, full_name):
     else:
         raise RuntimeError("スイマー検索フォームの入力欄が見つかりませんでした。")
 
-    submit = page.locator('input[type="submit"], button[type="submit"]').first
-    if submit.count() == 0:
-        submit = page.get_by_text("検索", exact=False).first
-    submit.click()
-    page.wait_for_load_state("domcontentloaded")
+    # 実際のフォームHTMLを確認したところ、この検索フォームに
+    # input[type="submit"]/button[type="submit"] は存在せず、見た目上の
+    # 「検索」ボタンは <a onclick="document.search_name.submit();
+    # return false;">この名前で検索</a> という、JavaScript経由でフォームを
+    # 送信する疑似ボタンだった（表示テキストも「検索」とは完全一致しない）。
+    # ボタンの見た目やテキストを探すのではなく、氏名を入力したそのフォーム
+    # 自体をJavaScript側から直接 submit() する方が、表示テキストや
+    # ボタンの実装に依存せず確実。
+    # evaluate() でJavaScript側からsubmit()を呼ぶと、その後のnavigation完了を
+    # Playwrightの .click() のようには自動で追跡してくれない。単純に
+    # wait_for_load_state() を続けて呼ぶだけだと、まだ始まっていない
+    # navigationに対して早すぎるタイミングで「読み込み完了」とみなして
+    # しまうことがあり、その食い違いが次の選手の処理でpage.goto()を呼んだ
+    # 際に「別のnavigationに割り込まれた」というエラーになって表面化する
+    # ことが実際にあった。expect_navigation() で明示的にこのsubmit()による
+    # 遷移そのものを待つことで、取りこぼしなく確実に完了を待つ。
+    try:
+        with page.expect_navigation(wait_until="domcontentloaded", timeout=15000):
+            text_inputs.nth(0).evaluate("el => el.form && el.form.submit()")
+    except Exception as e:
+        log(f"  ※ 検索フォームのsubmit()に失敗しました: {e}")
+        save_debug_screenshot(page, "search_submit_failed")
+        raise
 
     target_nospace = norm_nospace(full_name)
     affil_re = re.compile(AFFIL_RE_TMPL.format(name=re.escape(target_nospace)))
