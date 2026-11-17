@@ -1,0 +1,53 @@
+name: スイムレコード週次チェック
+
+on:
+  schedule:
+    # 毎週日曜 21:00 (日本時間) = 12:00 UTC
+    # 変更する場合は https://crontab.guru/ などで確認してください（UTC基準です）
+    - cron: "0 12 * * 0"
+  workflow_dispatch: {}
+    # ↑ GitHubの「Actions」タブから手動実行したいときのためのトリガー（入力不要）
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 依存パッケージをインストール
+        run: |
+          pip install -r scripts/requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: スイムレコードを確認してロスターを更新
+        env:
+          SWIMRECORD_ID: ${{ secrets.SWIMRECORD_ID }}
+          SWIMRECORD_PASSWORD: ${{ secrets.SWIMRECORD_PASSWORD }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          ROSTER_PATH: index.html
+        run: python scripts/check_and_update.py
+
+      - name: デバッグ用スクリーンショットを保存（失敗時のみ）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: scripts/debug_screenshots/
+          if-no-files-found: ignore
+
+      - name: 変更があればコミット＆プッシュ
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git diff --cached --quiet || git commit -m "スイムレコードモバイルから記録を自動更新"
+          git diff --cached --quiet || git push
