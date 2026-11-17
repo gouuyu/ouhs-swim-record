@@ -375,7 +375,20 @@ def main():
     errors = []
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page()
+        # Playwrightの既定のヘッドレスChromiumは、自分自身を"HeadlessChrome"という
+        # 自動化ツールだと分かる名前でサイトに名乗ってしまう。多くのサイトのWAF
+        # （不正アクセス防御システム、今回はSiteGuard Server Edition）はこの文字列を
+        # 見つけて機械的にブロックするため、通常のスマートフォン(Android Chrome)の
+        # ブラウザと同じ情報を名乗るようにして、ブロックを回避する。
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+            ),
+            locale="ja-JP",
+            viewport={"width": 412, "height": 915},
+        )
+        page = context.new_page()
         try:
             do_login(page)
         except Exception as e:
