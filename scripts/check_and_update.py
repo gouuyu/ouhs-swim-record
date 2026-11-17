@@ -96,7 +96,22 @@ def do_login(page):
 
     # 「ログイン」リンク/ボタンを探してクリック
     login_entry = page.get_by_text("ログイン", exact=False).first
-    login_entry.wait_for(state="visible", timeout=10000)
+    try:
+        login_entry.wait_for(state="visible", timeout=10000)
+    except PWTimeoutError:
+        # 想定外の画面になっている可能性が高いので、原因調査のために現在の
+        # ページの状態をログとスクリーンショットの両方に残してから失敗させる。
+        log("  ※ トップページに「ログイン」という文字列が見つかりませんでした。")
+        log(f"  現在のURL: {page.url}")
+        log(f"  ページタイトル: {page.title()}")
+        save_debug_screenshot(page, "login_entry_not_found")
+        try:
+            body_text = page.locator("body").inner_text(timeout=5000)
+            log("  ページ本文（先頭1000文字）:")
+            log(body_text[:1000])
+        except Exception as e2:
+            log(f"  ページ本文の取得にも失敗しました: {e2}")
+        raise
     login_entry.click()
     page.wait_for_load_state("domcontentloaded")
 
