@@ -1,7 +1,33 @@
 import json
+import re
 
 TAG_OPEN = '<script id="roster-data" type="application/json">'
 TAG_CLOSE = '</script>'
+
+DATA_DATE_RE = re.compile(r'(データ取得日\s*<b>)([^<]*)(</b>)')
+
+
+def update_data_retrieval_date(roster_path, date_obj):
+    """index.html内の「データ取得日」表示（例: <b>2026年11月15日</b>）を、
+    与えられた日付（datetime.date）で上書きする。
+
+    新しい記録の有無に関わらず、チェックを実行するたびに毎回この日付を
+    更新する運用にする（＝「最後にチェックした日」を表す）と決めた。
+    roster-data の JSON とは別の、ただのHTML表示用テキストなので、
+    load_roster/save_roster のJSON処理とは別にここで正規表現置換する。
+
+    対象の表示が見つからない場合は何もしない（index.htmlのレイアウトが
+    変わった可能性があるので、将来的にはログで気づけるようにしておく）。
+    """
+    date_str = f"{date_obj.year}年{date_obj.month}月{date_obj.day}日"
+    with open(roster_path, encoding='utf-8') as f:
+        content = f.read()
+    new_content, n = DATA_DATE_RE.subn(r'\g<1>' + date_str + r'\g<3>', content, count=1)
+    if n == 0:
+        return False
+    with open(roster_path, 'w', encoding='utf-8') as f:
+        f.write(new_content)
+    return True
 
 
 def load_roster(roster_path):

@@ -43,7 +43,13 @@ from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from line_notify import send_line_broadcast
-from merge_lib import academic_year, load_roster, seconds_to_time, time_to_seconds
+from merge_lib import (
+    academic_year,
+    load_roster,
+    seconds_to_time,
+    time_to_seconds,
+    update_data_retrieval_date,
+)
 from merge_swimrecord import merge_swimmer
 from swimrecord_parse import parse_swimrecord_text
 
@@ -504,6 +510,21 @@ def main():
 
     total_added = sum(r["added"] for r in results)
     results_with_new = [r for r in results if r["added"] > 0]
+
+    # 「データ取得日」の表示は、新しい記録の有無に関わらず、チェックを
+    # 実行するたびに毎回更新する（＝「最後にチェックした日」を表す）運用に
+    # した。新記録があったときだけ更新する方式より処理は増えるが（index.html
+    # が毎回変わるので毎週commit/pushが発生する）、サイトを見た人が
+    # 「ちゃんと動き続けている」と分かるようにするため、あえてこちらを選んだ。
+    try:
+        current_date = datetime.date.today()
+        if update_data_retrieval_date(ROSTER_PATH, current_date):
+            log(f"「データ取得日」の表示を {current_date:%Y-%m-%d} に更新しました。")
+        else:
+            log("※「データ取得日」の表示箇所が見つからず、更新できませんでした"
+                "（index.htmlのレイアウトが変わった可能性があります）。")
+    except Exception as e:
+        log(f"※「データ取得日」の更新に失敗しました: {e}")
 
     log("")
     log(f"=== 完了: 合計 {total_added}件の新しい記録を追加しました ===")
