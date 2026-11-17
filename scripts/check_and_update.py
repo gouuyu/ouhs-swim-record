@@ -116,10 +116,11 @@ def do_login(page):
         # どこの国・どんな種類のネットワークからアクセスしているかを確認する。
         try:
             import urllib.request
-            with urllib.request.urlopen(
-                "https://ip-api.com/json/?fields=status,country,countryCode,isp,org,as,query",
-                timeout=5,
-            ) as resp:
+            req = urllib.request.Request(
+                "https://ipinfo.io/json",
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 geo_info = resp.read().decode("utf-8")
             log(f"  実行サーバーのIP情報: {geo_info}")
         except Exception as e3:
