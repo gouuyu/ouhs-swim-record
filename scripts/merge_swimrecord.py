@@ -16,11 +16,20 @@ def merge_swimmer(roster_path, name, entries, dry_run=False):
     if not r:
         return {"error": f"NOT IN ROSTER: {name}"}
 
-    added, dup, relay_skip, auto_cleaned = [], [], [], []
+    added, dup, relay_skip, auto_cleaned, invalid_time_skip = [], [], [], [], []
 
     for e in entries:
         if e['is_relay']:
             relay_skip.append(e)
+            continue
+        # 「-」など、公式タイムが記録されていない行（失格・欠場など）は
+        # time_to_seconds() で数値化できない。このようなレースはベストタイム
+        # 比較の対象にならないので、安全にスキップする（クラッシュさせない）。
+        # 2026-11 の全選手バックフィルで木下妃魚選手のデータに遭遇して発覚。
+        try:
+            secs = time_to_seconds(e['time'])
+        except (ValueError, ZeroDivisionError):
+            invalid_time_skip.append(e)
             continue
         y, mo, da = e['date'].split('/')
         cal_year = int(y)
@@ -30,7 +39,6 @@ def merge_swimmer(roster_path, name, entries, dry_run=False):
         canon, source = canonical_game_name(e['game_raw'])
         if source == 'auto':
             auto_cleaned.append((e['game_raw'], canon))
-        secs = time_to_seconds(e['time'])
         is_dup = any(h['year'] == year and h['date'] == md and h['distance'] == e['distance']
                      and h['style'] == e['style'] and h['time'] == e['time'] for h in r['history'])
         if is_dup:
@@ -66,5 +74,6 @@ def merge_swimmer(roster_path, name, entries, dry_run=False):
     return {
         "name": name, "added": len(added), "dup": len(dup),
         "relay_skip": len(relay_skip), "auto_cleaned": list(set(auto_cleaned)),
+        "invalid_time_skip": len(invalid_time_skip), "invalid_time_entries": invalid_time_skip,
         "added_entries": added, "by_stroke_changes": by_stroke_changes,
     }

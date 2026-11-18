@@ -58,11 +58,50 @@ ROSTER_PATH = os.environ.get("ROSTER_PATH", "index.html")
 LOGIN_ID = os.environ.get("SWIMRECORD_ID")
 LOGIN_PW = os.environ.get("SWIMRECORD_PASSWORD")
 DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_screenshots")
-MAX_PAGES_PER_SWIMMER = 15  # ページネーションの無限ループ防止用の安全上限
+MAX_PAGES_PER_SWIMMER = 30  # ページネーションの無限ループ防止用の安全上限
 
 # OUHS（大阪体育大学）の表記ゆれ。検索結果一覧でこの括弧付き所属表記が付いた
 # リンクだけを本人として採用する（同姓同名の他大学選手との混同を避けるため）。
-AFFIL_RE_TMPL = r'^{name}\s*[（(](?:大阪体育大学|OUHS大体大)[)）]$'
+AFFIL_RE_TMPL = r'^{name}\s*[（(](?:{affils})[)）]$'
+DEFAULT_AFFILIATIONS = ["大阪体育大学", "OUHS大体大"]
+
+# ロスターには大阪体育大学の部員として載っているが、スイムレコードモバイル上の
+# 登録所属はクラブ名になっている選手の例外リスト。
+# （2026-11 棚卸し調査で発覚。上原心選手は大阪体育大学で練習しているが、
+# 登録上の所属は「尾崎スイミングスクール泉佐野」のため、通常の所属名では
+# 検索に一致しない。）
+AFFILIATION_OVERRIDES = {
+    "上原 心": ["尾崎スイミングスクール泉佐野"],
+}
+
+# ロスターの氏名に使われている漢字が、サイト側の検索フォームの文字セットに
+# 無く入力しても姓名欄が空になってしまう選手の例外（2026-11 棚卸し調査で
+# 発覚）。桒野元輝選手の「桒」がこれに該当し、名前（元輝）だけで検索すると、
+# サイト上はカタカナ表記「ｸﾜﾉ ｹﾞﾝｷ」で表示される。
+SEARCH_NAME_OVERRIDES = {
+    "桒野 元輝": {"last": "", "first": "元輝", "match_text": "ｸﾜﾉｹﾞﾝｷ"},
+}
+
+# ロスターの表記とスイムレコードモバイル側の表示で、同じ人物なのに使われている
+# 漢字の異体字が違うケース（2026-11 棚卸し調査で発覚。例: 德永央さん→サイトでは
+# 「徳永央」、早﨑愛莉さん/岡﨑一彗さん→「崎」、桒野元輝さん→「桑野」で表示される）。
+# 検索結果の所属判定で両者を同一視するため、比較前にこの変換をかける。
+KANJI_VARIANT_MAP = {
+    "德": "徳",
+    "﨑": "崎",
+    "桒": "桑",
+}
+
+# 同姓同名が多い名前だと、検索結果一覧自体が複数ページに渡ることがある
+# （2026-11 棚卸し調査で発覚。例: 伊藤大智さん、藤田涼さんは本人が2ページ目に
+# いた）。安全上限として、この回数までは「次へ」を辿って探す。
+MAX_SEARCH_RESULT_PAGES = 10
+
+
+def normalize_kanji_variants(s):
+    for old, new in KANJI_VARIANT_MAP.items():
+        s = s.replace(old, new)
+    return s
 
 
 def log(msg):
@@ -221,9 +260,21 @@ def do_login(page):
 
 
 def search_and_open_swimmer(page, full_name):
-    last_first = re.split(r"[ 　]", full_name, maxsplit=1)
-    last = last_first[0]
-    first = last_first[1] if len(last_first) > 1 else ""
+    # 検索フォーム自体への入力は、ロスターの表記（異体字を含む元の文字列）の
+    # ままにする。実際に試したところ、このサイトの検索は異体字入力の方で
+    # ヒットし、結果の表示だけ標準字体になる（例: 「德永」で検索すると
+    # 「徳永央」が見つかる）。逆に標準字体に変換してから検索すると、同じ
+    # 選手でもヒットしなくなるケースがあった（早﨑さん・岡﨑さん・德永さんで
+    # 確認済み）。そのため検索クエリは変換しない。異体字の同一視は、検索結果
+    # の表記とロスター側の表記を比較する側（下のaffil_re）だけで行う。
+    name_override = SEARCH_NAME_OVERRIDES.get(full_name)
+    if name_override:
+        last = name_override["last"]
+        first = name_override["first"]
+    else:
+        last_first = re.split(r"[ 　]", full_name, maxsplit=1)
+        last = last_first[0]
+        first = last_first[1] if len(last_first) > 1 else ""
 
     page.goto(BASE_URL, wait_until="domcontentloaded")
     goto_by_link_text(page, "スイマー検索")
@@ -262,21 +313,48 @@ def search_and_open_swimmer(page, full_name):
         save_debug_screenshot(page, "search_submit_failed")
         raise
 
-    target_nospace = norm_nospace(full_name)
-    affil_re = re.compile(AFFIL_RE_TMPL.format(name=re.escape(target_nospace)))
-    # 検索結果一覧から、所属が大阪体育大学/OUHS大体大 と完全一致するリンクだけを拾う
-    all_links = page.locator("a")
-    n_links = all_links.count()
-    for i in range(n_links):
-        try:
-            txt = all_links.nth(i).inner_text(timeout=2000)
-        except PWTimeoutError:
-            continue
-        candidate_nospace = norm_nospace(txt)
-        if affil_re.match(candidate_nospace):
-            all_links.nth(i).click()
-            page.wait_for_load_state("domcontentloaded")
-            return True
+    if name_override:
+        # 比較対象の候補テキストは norm_nospace() で半角/全角カタカナの正規化
+        # (NFKC)もかかった状態になるので、match_text側にも同じ正規化をかけて
+        # 揃える（揃えないと半角カタカナのまま比較してしまい一致しない）。
+        target_nospace = normalize_kanji_variants(norm_nospace(name_override["match_text"]))
+    else:
+        target_nospace = normalize_kanji_variants(norm_nospace(full_name))
+    affils = AFFILIATION_OVERRIDES.get(full_name, DEFAULT_AFFILIATIONS)
+    affil_re = re.compile(
+        AFFIL_RE_TMPL.format(
+            name=re.escape(target_nospace),
+            affils="|".join(re.escape(a) for a in affils),
+        )
+    )
+
+    # 検索結果一覧から、所属が一致するリンクだけを拾う。同姓同名が多い名前だと
+    # 検索結果一覧自体が複数ページに渡ることがあるので、「次へ」を
+    # MAX_SEARCH_RESULT_PAGES回まで辿る（検索結果一覧の「次へ」は通常のテキスト
+    # リンクで、記録一覧のページ送りとは別物）。
+    for _ in range(MAX_SEARCH_RESULT_PAGES):
+        all_links = page.locator("a")
+        n_links = all_links.count()
+        for i in range(n_links):
+            try:
+                txt = all_links.nth(i).inner_text(timeout=2000)
+            except PWTimeoutError:
+                continue
+            candidate_nospace = normalize_kanji_variants(norm_nospace(txt))
+            if affil_re.match(candidate_nospace):
+                all_links.nth(i).click()
+                page.wait_for_load_state("domcontentloaded")
+                return True
+
+        next_link = page.get_by_text("次へ", exact=True)
+        if next_link.count() > 0:
+            try:
+                next_link.first.click()
+                page.wait_for_load_state("domcontentloaded")
+                continue
+            except Exception:
+                break
+        break
     return False
 
 
@@ -390,6 +468,20 @@ def fetch_detail_for_new_entries(page, entries, existing_keys):
     return entries
 
 
+def get_next_record_page_href(page):
+    """記録一覧のページ送りリンクを返す（無ければNone）。
+    実際にブラウザで確認したところ、記録一覧のページ送りは「次へ」という
+    文字列ではなく "< 1 2 3 4 5 6 >" のような番号付きリンクで、次ページへの
+    リンクは表示テキストが完全に ">" だけのリンクだった（2026-11 棚卸し調査で
+    発覚。以前は「次へ」を探していたため、1年度に11件以上記録がある選手は
+    1ページ目しか見ておらず、記録が溜まり続ける選手ほど取りこぼしが増える
+    状態になっていた）。hrefを直接goto()するので、クリック可否には依存しない。"""
+    candidates = page.locator("a").filter(has_text=re.compile(r"^>$"))
+    if candidates.count() > 0:
+        return candidates.first.get_attribute("href")
+    return None
+
+
 def collect_entries_with_detail(page, existing_keys):
     all_entries = []
     for _ in range(MAX_PAGES_PER_SWIMMER):
@@ -404,11 +496,10 @@ def collect_entries_with_detail(page, existing_keys):
             log(f"  ※ このページでの詳細ページ取得処理中にエラー: {ex}")
         all_entries.extend(page_entries)
 
-        next_link = page.get_by_text("次へ", exact=True)
-        if next_link.count() > 0:
+        next_href = get_next_record_page_href(page)
+        if next_href:
             try:
-                next_link.first.click()
-                page.wait_for_load_state("domcontentloaded")
+                page.goto(next_href, wait_until="domcontentloaded")
                 continue
             except Exception:
                 break

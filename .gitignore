@@ -15,3 +15,8 @@ scripts/debug_screenshots/
 scripts/__pycache__/
 **/__pycache__/
 *.pyc
+
+# 棚卸し調査(audit_all_swimmers.py / audit_remaining_swimmers.py)が出力する
+# レビュー用レポート
+audit_report.txt
+audit_report_remaining.txt
