@@ -51,6 +51,7 @@ from merge_lib import (
     update_data_retrieval_date,
 )
 from merge_swimrecord import merge_swimmer
+from para_check import PARA_PNO, fetch_para_rows, merge_para_history, parse_para_row
 from swimrecord_parse import parse_swimrecord_text
 
 BASE_URL = "https://sp.j-swim.jp/"
@@ -534,7 +535,7 @@ def process_swimmer(page, full_name, current_year, swimmer_record):
     return {"name": full_name, "added": report["added"], "added_entries": report["added_entries"], "error": None}
 
 
-def build_notification_text(results_with_new):
+def build_notification_text(results_with_new, para_notify=None):
     lines = ["【OUHS SWIM TEAM】新しい記録が見つかりました"]
     for r in results_with_new:
         lines.append("")
@@ -543,6 +544,14 @@ def build_notification_text(results_with_new):
             lines.append(f"  {e['date']} {e['style']} {e['distance']} {e['time']} {e['game']}")
         if len(r["added_entries"]) > 5:
             lines.append(f"  …他{len(r['added_entries']) - 5}件")
+    for name, entries in (para_notify or []):
+        lines.append("")
+        lines.append(f"■ {name}（パラ水泳・{len(entries)}件）")
+        for e in entries[:5]:
+            cls_label = f"({e['cls']})" if e.get("cls") else ""
+            lines.append(f"  {e['date']} {e['style']}{e['distance']}{cls_label} {e['time']} {e['game']}")
+        if len(entries) > 5:
+            lines.append(f"  …他{len(entries) - 5}件")
     lines.append("")
     lines.append("ロスターページで詳細をご確認ください。")
     return "\n".join(lines)
@@ -599,7 +608,38 @@ def main():
 
         browser.close()
 
-    total_added = sum(r["added"] for r in results)
+    # パラ水泳の記録チェック（日本パラ水泳連盟 選手・記録データベース、
+    # paraswim3.jp）。通常の51名チェックとは完全に独立したステップとして実行
+    # する。ログイン不要の別サイトであり、ここで何か失敗しても、通常チェックの
+    # 結果やLINE通知が巻き込まれて止まらないようにするため（2026-11、動作確認用
+    # のpara_check.pyでの検証を経て本体に組み込み）。
+    para_added_total = 0
+    para_notify = []
+    try:
+        with sync_playwright() as p:
+            para_browser = p.chromium.launch()
+            para_page = para_browser.new_page()
+            for para_name, pno in PARA_PNO.items():
+                try:
+                    rows = fetch_para_rows(para_page, pno)
+                    parsed = [e for e in (parse_para_row(para_name, v) for v in rows) if e is not None]
+                    report = merge_para_history(ROSTER_PATH, para_name, parsed, dry_run=False)
+                    if "error" in report:
+                        log(f"  ※ パラ記録チェック: {report['error']}")
+                        continue
+                    if report["added"] > 0:
+                        log(f"  パラ記録チェック: {para_name} に新しい記録 {report['added']}件")
+                        para_added_total += report["added"]
+                        para_notify.append((para_name, report["added_entries"]))
+                    else:
+                        log(f"  パラ記録チェック: {para_name} は新しい記録なし")
+                except Exception as e:
+                    log(f"  ※ パラ記録チェック（{para_name}）でエラー: {e}")
+            para_browser.close()
+    except Exception as e:
+        log(f"※ パラ記録チェック全体でエラー: {e}")
+
+    total_added = sum(r["added"] for r in results) + para_added_total
     results_with_new = [r for r in results if r["added"] > 0]
 
     # 「データ取得日」の表示は、新しい記録の有無に関わらず、チェックを
@@ -622,8 +662,8 @@ def main():
     if errors:
         log(f"※ {len(errors)}名の処理でエラーが発生しました: {[n for n, _ in errors]}")
 
-    if results_with_new:
-        notif_text = build_notification_text(results_with_new)
+    if results_with_new or para_notify:
+        notif_text = build_notification_text(results_with_new, para_notify)
         send_line_broadcast(notif_text)
     else:
         log("新しい記録はありませんでした。通知・コミットは行いません。")
