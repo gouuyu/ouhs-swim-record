@@ -1,12 +1,16 @@
 name: スイムレコード週次チェック
 
 on:
-  schedule:
-    # 毎週日曜 21:00 (日本時間) = 12:00 UTC
-    # 変更する場合は https://crontab.guru/ などで確認してください（UTC基準です）
-    - cron: "0 12 * * 0"
+  # 本番の週次自動実行は、パワーシェル＋Windowsタスクスケジューラ側
+  # （run_check.ps1、毎週月曜17時、ご自身のPC上で実行）に一本化しています。
+  # こちらのGitHub Actions側のスケジュール自動実行（schedule トリガー）は
+  # 停止済みです。スイムレコードモバイル側のWAF（SiteGuard）が、GitHub
+  # Actionsのクラウドサーバーからのアクセスをブロックしてしまい、毎回失敗
+  # していたためです。
+  #
+  # このworkflow_dispatchは、必要なときに手動で試したい場合のために残して
+  # あります（GitHubの「Actions」タブ→本ワークフロー→「Run workflow」）。
   workflow_dispatch: {}
-    # ↑ GitHubの「Actions」タブから手動実行したいときのためのトリガー（入力不要）
 
 permissions:
   contents: write
