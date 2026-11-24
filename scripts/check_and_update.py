@@ -34,6 +34,7 @@ GitHub Actions のスケジュール実行専用。やること:
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import unicodedata
@@ -60,6 +61,20 @@ LOGIN_ID = os.environ.get("SWIMRECORD_ID")
 LOGIN_PW = os.environ.get("SWIMRECORD_PASSWORD")
 DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_screenshots")
 MAX_PAGES_PER_SWIMMER = 30  # ページネーションの無限ループ防止用の安全上限
+
+# 詳細ページ(record_00.php)のクリックが、サイト側のページ構造変化等が原因で
+# 繰り返し失敗することがある。1件ごとに既定の30秒待ってタイムアウトすると、
+# 失敗が続いた場合に全体の処理時間が大きく伸びてしまう（2026-11、ほぼ全選手で
+# 失敗が続き、合計90分以上かかった実例あり）。そのため、
+#   ・1回あたりの待ち時間を既定の30秒から5秒に短縮する
+#   ・累計でDETAIL_FETCH_FAILURE_LIMIT回失敗したら、今回の実行ではこれ以降
+#     リアクション・ラップタイムの取得自体をスキップする（通常のタイム・
+#     大会名などの記録は、このあとも通常通り追加される。次回の実行では
+#     また最初から取得を試みる＝一時的な不具合なら自然に復旧する）
+# という安全策を入れている。
+DETAIL_FETCH_TIMEOUT_MS = 5000
+DETAIL_FETCH_FAILURE_LIMIT = 5
+_detail_fetch_state = {"failures": 0, "disabled": False}
 
 # OUHS（大阪体育大学）の表記ゆれ。検索結果一覧でこの括弧付き所属表記が付いた
 # リンクだけを本人として採用する（同姓同名の他大学選手との混同を避けるため）。
@@ -449,9 +464,22 @@ def fetch_detail_for_new_entries(page, entries, existing_keys):
             continue
         if entry_dedup_key(e) in existing_keys:
             continue  # 既存の記録。詳細ページを開く必要はない
+        if _detail_fetch_state["disabled"]:
+            continue  # 詳細ページ取得が規定回数失敗したため、今回の実行ではスキップ
         try:
-            detail_links.nth(i).click()
-            page.wait_for_load_state("domcontentloaded")
+            # 2026-11診断: 詳細リンク(<a>)が <li class="time">...</li> を
+            # 直接くるんだまま <ul> の子要素になっているため(サイト側のマーク
+            # アップ不備。恐らく「R」バッジ機能追加と同時に崩れた)、ブラウザは
+            # インライン要素(a)の中にブロック要素(li)がある状態を解決しようと
+            # して a 自身の表示領域を幅0・高さ0に潰してしまう。これが原因で
+            # Playwrightの .click() が「要素が見えない」としてタイムアウトし
+            # 続けていた（診断スクリプトのbounding_box()で確認済み）。
+            # 対策: クリックする代わりに href を直接読み取って goto する。
+            # get_next_record_page_href() と同じ考え方＝クリック可否に依存しない。
+            href = detail_links.nth(i).get_attribute("href", timeout=DETAIL_FETCH_TIMEOUT_MS)
+            if not href:
+                raise RuntimeError("詳細リンクのhref属性が取得できませんでした")
+            page.goto(href, wait_until="domcontentloaded", timeout=DETAIL_FETCH_TIMEOUT_MS * 2)
             detail_text = page.locator("body").inner_text(timeout=10000)
             parsed = parse_record_detail(detail_text)
             if parsed["reaction"] is not None:
@@ -461,6 +489,18 @@ def fetch_detail_for_new_entries(page, entries, existing_keys):
         except Exception as ex:
             log(f"  ※ 詳細ページ取得に失敗（{e['date']} {e['style']}{e['distance']}）: {ex}")
             save_debug_screenshot(page, f"detail_failed_{i}")
+            _detail_fetch_state["failures"] += 1
+            if (
+                _detail_fetch_state["failures"] >= DETAIL_FETCH_FAILURE_LIMIT
+                and not _detail_fetch_state["disabled"]
+            ):
+                _detail_fetch_state["disabled"] = True
+                log(
+                    f"  ※ 詳細ページ取得が{DETAIL_FETCH_FAILURE_LIMIT}回失敗したため、"
+                    "今回の実行ではこれ以降のリアクション・ラップタイムの取得をスキップします"
+                    "（通常のタイム・大会名などの記録は、このあとも通常通り追加されます。"
+                    "次回の実行ではまた取得を試みます）。"
+                )
         finally:
             try:
                 page.go_back(wait_until="domcontentloaded")
@@ -555,6 +595,73 @@ def build_notification_text(results_with_new, para_notify=None):
     lines.append("")
     lines.append("ロスターページで詳細をご確認ください。")
     return "\n".join(lines)
+
+
+def git_commit_and_push(roster_path):
+    """index.htmlに変更があれば、ここでgit commit・pushまで完結させる。
+
+    以前は「index.htmlの更新・LINE通知はこのスクリプトが行い、commit・push は
+    呼び出し元（GitHub Actionsワークフローのシェルステップ／run_check.ps1）が
+    行う」という役割分担だった。しかし、PowerShellから直接
+    `python scripts\\check_and_update.py` を手動実行した場合（run_check.ps1を
+    経由しない場合）はcommit・pushが一切行われず、「LINEには新記録の通知が
+    来たのに、サイトには反映されていない」という事故が実際に起きた
+    （2026-11）。そのため、呼び出し経路によらず必ずここでpushまで完了させる
+    ように一本化した。
+
+    GitHub Actions環境では、ワークフロー側の`actions/checkout`がpush用の
+    認証情報を既にgit configに設定済みなので、ここから素の`git push`を呼ぶ
+    だけでそのまま使える。ローカルPCでは、通常はGitHub Desktopや
+    run_check.ps1が既にgitのuser.name/user.emailを設定済みだが、万一未設定
+    （真っさらな環境）でも落ちないよう、未設定の場合だけ既定値を設定する。
+
+    gitコマンド自体が無い環境や、何らかの理由でpushに失敗した場合でも、
+    index.htmlの更新・LINE通知は既に完了しているので、ここでは例外を外に
+    投げずログに記録するだけにとどめる（run_check.ps1側の重複チェックが、
+    ここでのpush失敗時の二重の安全網として残っている）。"""
+
+    def _git(args):
+        return subprocess.run(
+            ["git"] + args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    try:
+        if not _git(["config", "user.name"]).stdout.strip():
+            _git(["config", "user.name", "github-actions[bot]"])
+        if not _git(["config", "user.email"]).stdout.strip():
+            _git(["config", "user.email", "github-actions[bot]@users.noreply.github.com"])
+
+        _git(["add", roster_path])
+        diff = _git(["diff", "--cached", "--quiet", "--", roster_path])
+        if diff.returncode == 0:
+            log("index.htmlに変更はありませんでした。commit & push は行いません。")
+            return
+
+        import datetime as _dt
+
+        msg = f"スイムレコード自動チェック: 記録を更新 ({_dt.date.today():%Y-%m-%d})"
+        commit = _git(["commit", "-m", msg])
+        if commit.returncode != 0:
+            log(f"※ commitに失敗しました: {commit.stderr.strip()}")
+            return
+        log("index.htmlに変更を検出しました。commit & push します。")
+
+        push = _git(["push"])
+        if push.returncode == 0:
+            log("pushしました。")
+        else:
+            log(f"※ pushに失敗しました（終了コード: {push.returncode}）: {push.stderr.strip()}")
+    except FileNotFoundError:
+        log(
+            "※ gitコマンドが見つからないため、commit・pushはスキップしました"
+            "（index.htmlの更新自体は完了しています。手動でコミットしてください）。"
+        )
+    except Exception as e:
+        log(f"※ commit・push処理でエラー: {e}")
 
 
 def main():
@@ -666,7 +773,13 @@ def main():
         notif_text = build_notification_text(results_with_new, para_notify)
         send_line_broadcast(notif_text)
     else:
-        log("新しい記録はありませんでした。通知・コミットは行いません。")
+        log("新しい記録はありませんでした。通知は行いません。")
+
+    # commit・push は呼び出し経路（GitHub Actions／タスクスケジューラ／手動実行）に
+    # よらず、必ずここで完結させる（詳細はgit_commit_and_pushのdocstring参照）。
+    # 新しい記録が無い回でも「データ取得日」表示は毎回更新されるため、
+    # 基本的に毎回ここでcommit・pushが走る。
+    git_commit_and_push(ROSTER_PATH)
 
     # 変更があったかどうかをシェル側（ワークフロー）が判断できるよう、
     # 終了コードではなくファイルの有無で伝える（git diffで検知するため不要だが、

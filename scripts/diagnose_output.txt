@@ -1,0 +1,21 @@
+=== 対象選手: 阿部 凪紗 ===
+詳細リンクの件数: 10
+is_visible(): False
+bounding_box(): {'x': 39.140625, 'y': 1111.9375, 'width': 0, 'height': 0}
+outerHTML:
+<a rel="external" href="https://sp.j-swim.jp/p/swimmer/record_00.php?url=CRUVEURSIERTJ0RTJwhPC0wSFggMTwsRRFMnEhYIDAwEE0RTJxMEAg4TBT5RUU8RCRFEUicUCAVEUiUiMyI_VFFXV1ZQRFNXBhQIBURSJS4vRFNXAgoREwxEUiUCGERTVxMEEhQNFT4IBURSJVBQU1BUU1FTV0RTVxIEDQQCFURSJVFEU1cSERQARFIlLA4bCA0NAERTVFMnVE9RRFMjRFNUU1ktCA8UGURTVFIjRFMjIA8FEw4IBURTI1BVRFNUUiNEUyMxCBkEDURTI1ZEU1RTWERTIyAREQ0ENgQDKggVRFNUUydUUlZPUldEUyNEU1RTWSopNSwtRFNUUyJEUyMNCAoERFMjJgQCCg5EU1RTWERTIyIJEw4MBERTVFMnUFJQT1FPUU9RRFMjLA4DCA0ERFMjMgAHABMIRFNUUydUUlZPUlcFQr"><li class="time">1:12.31</li></a>
+親要素のouterHTML:
+<ul>
+					<li>2026/11/22</li>
+
+					<li>公式</li>
+					<li>平泳ぎ</li>
+					<li>100</li>
+					<li>長</li>
+
+                    					    <a rel="external" href="https://sp.j-swim.jp/p/swimmer/record_00.php?url=CRUVEURSIERTJ0RTJwhPC0wSFggMTwsRRFMnEhYIDAwEE0RTJxMEAg4TBT5RUU8RCRFEUicUCAVEUiUiMyI_VFFXV1ZQRFNXBhQIBURSJS4vRFNXAgoREwxEUiUCGERTVxMEEhQNFT4IBURSJVBQU1BUU1FTV0RTVxIEDQQCFURSJVFEU1cSERQARFIlLA4bCA0NAERTVFMnVE9RRFMjRFNUU1ktCA8UGURTVFIjRFMjIA8FEw4IBURTI1BVRFNUUiNEUyMxCBkEDURTI1ZEU1RTWERTIyAREQ0ENgQDKggVRFNUUydUUlZPUldEUyNEU1RTWSopNSwtRFNUUyJEUyMNCAoERFMjJgQCCg5EU1RTWERTIyIJEw4MBERTVFMnUFJQT1FPUU9RRFMjLA4DCA0ERFMjMgAHABMIRFNUUydUUlZPUlcFQr"><li class="time">1:12.31</li></a><li>R</li>                    
+				</ul>
+計算済みスタイル: {'display': 'inline', 'visibility': 'visible', 'opacity': '1', 'pointerEvents': 'auto', 'position': 'static', 'zIndex': 'auto'}
+そのリンクの中心座標に実際にある要素（クリックを奪っている可能性のある要素）:
+None
+スクリーンショットを保存しました: C:\Users\yugoi\OneDrive\ドキュメント\GitHub\swim-log\ouhs-swim-record\scripts\diagnose_screenshot.png
