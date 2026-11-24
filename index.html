@@ -355,6 +355,27 @@
   .hist-game { color: var(--ink-2); }
   .hist-time { font-weight: 700; text-align: right; white-space: nowrap; }
 
+  tr.hist-row.has-detail { cursor: pointer; }
+  .hist-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    margin-left: 6px; padding: 2px; border: none; background: none; cursor: pointer;
+    color: var(--ink-muted); vertical-align: middle;
+  }
+  .hist-toggle .arrow { display: inline-block; font-size: 9px; transition: transform .15s ease; }
+  .hist-toggle[aria-expanded="true"] .arrow { transform: rotate(90deg); }
+  tr.hist-detail-row[hidden] { display: none; }
+  tr.hist-detail-row td { padding: 0 8px 10px; border-bottom: 1px solid var(--border); }
+  tr.hist-detail-row:last-child td { border-bottom: none; }
+  .hist-detail-chips { display: flex; flex-wrap: wrap; gap: 8px 10px; margin-bottom: 6px; }
+  .hist-detail-chip {
+    display: flex; align-items: baseline; gap: 5px;
+    background: var(--surface-2); border-radius: 7px; padding: 4px 10px; font-size: 12px;
+  }
+  .hist-detail-chip .hdc-label { color: var(--ink-muted); }
+  .hist-detail-chip .hdc-val { font-weight: 700; color: var(--ink); }
+  .hist-detail-chip.pt .hdc-val { color: var(--gold); }
+  .hist-detail-laps { margin-top: 0; }
+
   .hist-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
   .hist-filters select {
     font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface);
@@ -476,6 +497,14 @@
     table.history td:nth-child(5) { grid-area: time; align-self: end; text-align: right; font-size: 14px; }
     .hist-ev { white-space: normal; }
     .hist-game { white-space: normal; line-height: 1.4; }
+    /* 詳細行(ラップ・リアクション・FINAポイント)は、通常行と違い1セルだけの
+       構造なので、grid化せずそのまま縦積みする */
+    table.history tr.hist-detail-row {
+      display: block; padding: 0 10px 10px; border-bottom: 1px solid var(--border);
+    }
+    table.history tr.hist-detail-row td {
+      display: block; grid-area: unset; padding: 0; border-bottom: none;
+    }
 
     .grid:has(.relay-card) { grid-template-columns: 1fr; }
     .leg-row { grid-template-columns: 20px 1fr auto; gap: 4px 6px; font-size: 12.5px; }
@@ -810,13 +839,28 @@
   var bestsWrap = document.getElementById('modalBests');
   document.querySelector('.modal-body').addEventListener('click', function (e) {
     var btn = e.target.closest('.lap-btn');
-    if (!btn) return;
-    var item = btn.closest('.best-item');
-    var panel = item && item.querySelector('.lap-panel');
-    if (!panel) return;
-    var expanded = btn.getAttribute('aria-expanded') === 'true';
-    btn.setAttribute('aria-expanded', String(!expanded));
-    panel.hidden = expanded;
+    if (btn) {
+      var item = btn.closest('.best-item');
+      var panel = item && item.querySelector('.lap-panel');
+      if (!panel) return;
+      var expanded = btn.getAttribute('aria-expanded') === 'true';
+      btn.setAttribute('aria-expanded', String(!expanded));
+      panel.hidden = expanded;
+      return;
+    }
+    // 大会成績履歴の行タップ：ラップ・リアクション・FINAポイントのどれか1つでも
+    // 持っている行だけ開閉できる（historyRowHTML側でhas-detailクラスを付与）。
+    // 行のどこをタップしても開閉できるよう、ボタンではなく行自体にリスナーを
+    // 掛けている（スマホでの操作しやすさを優先）。
+    var row = e.target.closest('tr.has-detail');
+    if (row) {
+      var detailRow = row.nextElementSibling;
+      if (!detailRow || !detailRow.classList.contains('hist-detail-row')) return;
+      var histBtn = row.querySelector('.hist-toggle');
+      var histExpanded = detailRow.hidden === false;
+      detailRow.hidden = histExpanded;
+      if (histBtn) histBtn.setAttribute('aria-expanded', String(!histExpanded));
+    }
   });
 
   // ---- history filters (泳法・距離・水路)：通常の大会成績履歴／パラ水泳記録の両方で使う共通部品 ----
@@ -827,15 +871,51 @@
     return h.year * 10000 + mo * 100 + da;
   }
 
+  // 大会成績履歴の1行に、ラップ・リアクション・FINAポイントのいずれかがあれば、
+  // タップで開閉できる詳細行を付け加える（2026-11、詳細ページ取得の不具合修正を機に、
+  // これらのデータが安定して取れるようになったため追加）。
+  function historyDetailHTML(h) {
+    var chips = [];
+    if (h.reaction != null) {
+      chips.push(
+        '<div class="hist-detail-chip"><span class="hdc-label">リアクション</span>' +
+        '<span class="hdc-val num">' + esc(h.reaction.toFixed(2)) + '</span></div>'
+      );
+    }
+    if (h.finaPoint != null) {
+      chips.push(
+        '<div class="hist-detail-chip pt"><span class="hdc-label">FINAポイント</span>' +
+        '<span class="hdc-val num">' + h.finaPoint + 'pt</span></div>'
+      );
+    }
+    var chipsHTML = chips.length ? '<div class="hist-detail-chips">' + chips.join('') + '</div>' : '';
+    var lapsHTML = (h.laps && h.laps.length > 1)
+      ? '<div class="lap-panel hist-detail-laps">' + lapChipsHTML(h.laps) + '</div>'
+      : '';
+    return chipsHTML + lapsHTML;
+  }
+
   function historyRowHTML(h) {
-    return '<tr>' +
+    var hasDetail = !h.dnf && ((h.laps && h.laps.length > 1) || h.reaction != null || h.finaPoint != null);
+    var timeCell = h.dnf
+      ? '<td class="hist-time num dnf">棄権</td>'
+      : '<td class="hist-time num">' + esc(h.time) +
+        (hasDetail
+          ? '<button type="button" class="hist-toggle" aria-expanded="false" aria-label="ラップ・リアクション等の詳細を表示"><span class="arrow">&#9656;</span></button>'
+          : '') +
+        '</td>';
+    var mainRow = '<tr class="' + (hasDetail ? 'hist-row has-detail' : 'hist-row') + '">' +
       '<td class="num">' + h.year + '/' + esc(h.date || '') + '</td>' +
       '<td><span class="hist-ev"><span class="sw" style="background:' + strokeColor(h.style) + '"></span>' + esc(h.distance) + esc(h.style) +
       (h.cls ? '<span class="cls-tag">' + esc(h.cls) + '</span>' : '') + '</span></td>' +
       '<td>' + esc(h.waterway) + '</td>' +
       '<td class="hist-game">' + esc(h.game) + '</td>' +
-      (h.dnf ? '<td class="hist-time num dnf">棄権</td>' : '<td class="hist-time num">' + esc(h.time) + '</td>') +
+      timeCell +
       '</tr>';
+    var detailRow = hasDetail
+      ? '<tr class="hist-detail-row" hidden><td colspan="5">' + historyDetailHTML(h) + '</td></tr>'
+      : '';
+    return mainRow + detailRow;
   }
 
   // 種目・距離・水路の選択肢は、対象の選手個人ではなく該当データベース全体から作る固定の一覧にする
