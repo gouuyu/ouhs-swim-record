@@ -119,7 +119,9 @@ def recompute_by_stroke(data):
             for i, b in enumerate(entries):
                 key = (style, b['distance'], b['waterway'])
                 hb = best_hist.get(key)
-                if hb and hb['seconds'] < b['seconds'] - 1e-6:
+                if not hb:
+                    continue
+                if hb['seconds'] < b['seconds'] - 1e-6:
                     new_entry = {
                         'year': hb['year'], 'waterway': hb['waterway'], 'style': hb['style'],
                         'distance': hb['distance'], 'time': hb['time'],
@@ -133,4 +135,20 @@ def recompute_by_stroke(data):
                         new_entry['reaction'] = hb['reaction']
                     changes.append((s['name'], style, b['distance'], b['waterway'], b['time'], hb['time']))
                     entries[i] = new_entry
+                elif abs(hb['seconds'] - b['seconds']) < 1e-6:
+                    # 同タイム（＝byStroke側のこのエントリ自身が、history側のこのレースと
+                    # 同一のもの）。2026-11、詳細ページ取得の不具合修正を機に、既存の記録に
+                    # ラップ・リアクションを後から拾い直す（バックフィルする）仕組みを追加した。
+                    # history側は拾い直せてもbyStroke側は独立したコピーなので自動では
+                    # 反映されない。そのため、置き換えではなく「無ければ補う」だけここで行う
+                    # （finaPoint/ranking/raceCountなど、byStroke側にしか無い情報は失わない）。
+                    patched = False
+                    if hb.get('laps') and not b.get('laps'):
+                        b['laps'] = hb['laps']
+                        patched = True
+                    if hb.get('reaction') is not None and b.get('reaction') is None:
+                        b['reaction'] = hb['reaction']
+                        patched = True
+                    if patched:
+                        changes.append((s['name'], style, b['distance'], b['waterway'], b['time'], b['time']))
     return changes

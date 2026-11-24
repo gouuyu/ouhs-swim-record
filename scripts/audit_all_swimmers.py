@@ -28,7 +28,7 @@ index.htmlへの書き込み・commit/push・LINE通知は一切行わない（�
 使い方（PowerShellから）:
   python scripts\\audit_all_swimmers.py
   （SWIMRECORD_ID / SWIMRECORD_PASSWORD は既存の環境変数を使う）
-  51人×最大21年度を調べるため、かなり時間がかかります（横山あいさん1人で
+  全選手×最大21年度を調べるため、かなり時間がかかります（横山あいさん1人で
   387件取得するのに相当な時間がかかったため、全体では数十分程度を想定）。
 """
 import datetime

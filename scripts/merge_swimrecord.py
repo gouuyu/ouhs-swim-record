@@ -16,7 +16,7 @@ def merge_swimmer(roster_path, name, entries, dry_run=False):
     if not r:
         return {"error": f"NOT IN ROSTER: {name}"}
 
-    added, dup, relay_skip, auto_cleaned, invalid_time_skip = [], [], [], [], []
+    added, dup, relay_skip, auto_cleaned, invalid_time_skip, backfilled = [], [], [], [], [], []
 
     for e in entries:
         if e['is_relay']:
@@ -39,10 +39,27 @@ def merge_swimmer(roster_path, name, entries, dry_run=False):
         canon, source = canonical_game_name(e['game_raw'])
         if source == 'auto':
             auto_cleaned.append((e['game_raw'], canon))
-        is_dup = any(h['year'] == year and h['date'] == md and h['distance'] == e['distance']
-                     and h['style'] == e['style'] and h['time'] == e['time'] for h in r['history'])
-        if is_dup:
+        existing = next(
+            (h for h in r['history'] if h['year'] == year and h['date'] == md
+             and h['distance'] == e['distance'] and h['style'] == e['style'] and h['time'] == e['time']),
+            None,
+        )
+        if existing is not None:
             dup.append(e)
+            # 2026-11追加: 既存記録でも、今回ラップ・リアクションが取れていて
+            # （check_and_update.pyのfetch_detail_for_new_entriesが拾い直し対象として
+            # 詳細ページを開いた結果）、かつ既存側にまだ無ければ補完する。
+            # 既にある情報（finaPoint/ranking/raceCountなど）は上書きしない。
+            if not dry_run:
+                patched = False
+                if e.get('laps') and not existing.get('laps'):
+                    existing['laps'] = e['laps']
+                    patched = True
+                if e.get('reaction') is not None and existing.get('reaction') is None:
+                    existing['reaction'] = e['reaction']
+                    patched = True
+                if patched:
+                    backfilled.append(existing)
             continue
         entry = {
             "year": year, "waterway": e['waterway'], "style": e['style'], "distance": e['distance'],
@@ -63,7 +80,10 @@ def merge_swimmer(roster_path, name, entries, dry_run=False):
         added.append(entry)
 
     by_stroke_changes = []
-    if not dry_run and added:
+    # backfilledのみ（新規追加は無いがラップ・リアクションを既存記録に補完した）の場合も
+    # 保存・byStroke再計算が必要。そうしないと、せっかく拾い直したデータがindex.htmlに
+    # 書き戻されない。
+    if not dry_run and (added or backfilled):
         def key_fn(h):
             mo, da = h['date'].split('/')
             return (h['year'], int(mo), int(da))
@@ -76,4 +96,5 @@ def merge_swimmer(roster_path, name, entries, dry_run=False):
         "relay_skip": len(relay_skip), "auto_cleaned": list(set(auto_cleaned)),
         "invalid_time_skip": len(invalid_time_skip), "invalid_time_entries": invalid_time_skip,
         "added_entries": added, "by_stroke_changes": by_stroke_changes,
+        "backfilled": len(backfilled),
     }

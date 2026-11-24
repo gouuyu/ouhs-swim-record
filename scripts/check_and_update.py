@@ -38,6 +38,7 @@ import subprocess
 import sys
 import time
 import unicodedata
+from urllib.parse import urljoin
 
 from playwright.sync_api import TimeoutError as PWTimeoutError
 from playwright.sync_api import sync_playwright
@@ -407,9 +408,14 @@ def entry_dedup_key(e):
 
 
 def existing_keys_for(swimmer_record):
-    keys = set()
+    """既存レースのdedupキー→実際のhistoryエントリ の辞書を返す（辞書もキーの
+    in 判定はsetと同じように使えるので、既存の「in existing_keys」という呼び出し側は
+    そのまま動く）。エントリ本体まで引けるようにしたのは、2026-11に追加した
+    「ラップ・リアクションがまだ無い既存記録を拾い直す」機能のため
+    （fetch_detail_for_new_entriesを参照）。"""
+    keys = {}
     for h in swimmer_record.get("history", []):
-        keys.add((h["year"], h["date"], h["distance"], h["style"], h["time"]))
+        keys[(h["year"], h["date"], h["distance"], h["style"], h["time"])] = h
     return keys
 
 
@@ -451,7 +457,15 @@ def fetch_detail_for_new_entries(page, entries, existing_keys):
     その行の詳細ページ(record_00.php)を開いてリアクション・ラップを取得する。
     1件ごとに例外を分離しているので、どれか1件の詳細ページ取得に失敗しても、
     そのレース自体（タイム・大会名など）は通常通り追加され、リアクション・ラップ
-    だけが空欄になる。失敗してもページ遷移自体は必ず元のスイマーページに戻す。"""
+    だけが空欄になる。
+
+    詳細ページは、元の一覧ページ(page)とは別の新しいタブ(ブラウザコンテキストの
+    new_page())で開く。2026-11、詳細ページ取得後に page.go_back() で一覧ページに
+    戻ろうとしたところ、一覧ページが年度選択フォームのPOST送信で表示されたもの
+    だった場合に "net::ERR_CACHE_MISS"（フォームの再送信が必要だが自動では
+    再送信できないためのエラー）で戻れなくなり、以降その選手の残り全件が
+    連鎖的に失敗する不具合が見つかった。新しいタブで開けば元の一覧ページ(page)
+    には一切手を加えないので、この問題自体が起こり得ない。"""
     detail_links = page.locator('a[href*="record_00.php"]')
     link_count = detail_links.count()
     if link_count != len(entries):
@@ -462,10 +476,16 @@ def fetch_detail_for_new_entries(page, entries, existing_keys):
     for i, e in enumerate(entries):
         if e["is_relay"]:
             continue
-        if entry_dedup_key(e) in existing_keys:
-            continue  # 既存の記録。詳細ページを開く必要はない
+        existing_entry = existing_keys.get(entry_dedup_key(e))
+        if existing_entry is not None and existing_entry.get("laps"):
+            continue  # 既存の記録で、既にラップ・リアクションも取得済み。開く必要はない
+        # ここまで来るのは「新規の記録」または「既存だがラップ・リアクションが
+        # まだ無い記録」のどちらか。後者は2026-11追加の拾い直し（バックフィル）対象。
+        # 取得できた場合、新規なら通常通りmerge_swimmerで追加され、既存なら
+        # merge_swimmer側で元のhistoryエントリに補完される（details参照）。
         if _detail_fetch_state["disabled"]:
             continue  # 詳細ページ取得が規定回数失敗したため、今回の実行ではスキップ
+        detail_page = None
         try:
             # 2026-11診断: 詳細リンク(<a>)が <li class="time">...</li> を
             # 直接くるんだまま <ul> の子要素になっているため(サイト側のマーク
@@ -479,8 +499,14 @@ def fetch_detail_for_new_entries(page, entries, existing_keys):
             href = detail_links.nth(i).get_attribute("href", timeout=DETAIL_FETCH_TIMEOUT_MS)
             if not href:
                 raise RuntimeError("詳細リンクのhref属性が取得できませんでした")
-            page.goto(href, wait_until="domcontentloaded", timeout=DETAIL_FETCH_TIMEOUT_MS * 2)
-            detail_text = page.locator("body").inner_text(timeout=10000)
+            # hrefは一覧ページからの相対パス。新しいタブ(detail_page)は
+            # about:blankの状態で開くため、元の一覧ページ(page)のURLを基準に
+            # 絶対URLへ変換してからgoto()する必要がある（相対パスのままだと
+            # 解決できずエラーになる）。
+            absolute_url = urljoin(page.url, href)
+            detail_page = page.context.new_page()
+            detail_page.goto(absolute_url, wait_until="domcontentloaded", timeout=DETAIL_FETCH_TIMEOUT_MS * 2)
+            detail_text = detail_page.locator("body").inner_text(timeout=10000)
             parsed = parse_record_detail(detail_text)
             if parsed["reaction"] is not None:
                 e["reaction"] = parsed["reaction"]
@@ -488,7 +514,7 @@ def fetch_detail_for_new_entries(page, entries, existing_keys):
                 e["laps"] = parsed["laps"]
         except Exception as ex:
             log(f"  ※ 詳細ページ取得に失敗（{e['date']} {e['style']}{e['distance']}）: {ex}")
-            save_debug_screenshot(page, f"detail_failed_{i}")
+            save_debug_screenshot(detail_page if detail_page else page, f"detail_failed_{i}")
             _detail_fetch_state["failures"] += 1
             if (
                 _detail_fetch_state["failures"] >= DETAIL_FETCH_FAILURE_LIMIT
@@ -502,10 +528,11 @@ def fetch_detail_for_new_entries(page, entries, existing_keys):
                     "次回の実行ではまた取得を試みます）。"
                 )
         finally:
-            try:
-                page.go_back(wait_until="domcontentloaded")
-            except Exception as ex:
-                log(f"  ※ 詳細ページから戻れませんでした: {ex}")
+            if detail_page is not None:
+                try:
+                    detail_page.close()
+                except Exception:
+                    pass
     return entries
 
 
@@ -568,6 +595,8 @@ def process_swimmer(page, full_name, current_year, swimmer_record):
         return {"name": full_name, "added": 0, "added_entries": [], "error": report["error"]}
 
     log(f"  追加: {report['added']}件 / 重複: {report['dup']}件 / リレー除外: {report['relay_skip']}件")
+    if report.get("backfilled"):
+        log(f"  ※ 既存記録のうち{report['backfilled']}件、ラップ・リアクションを拾い直しました。")
     if report["auto_cleaned"]:
         log("  ※ 大会名が自動クリーニングされました（要確認）:")
         for raw, canon in report["auto_cleaned"]:
